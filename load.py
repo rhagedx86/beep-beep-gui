@@ -1,38 +1,21 @@
-import os
-import tkinter as tk
 from typing import Optional
-
 from commander_history import history_inst
 from beep_beep import beep_inst
-
+from location import location
 from gui import gui_inst
 from logutil import log
 import myNotebook as nb  # noqa
 
 
 
+
 def plugin_start3(plugin_dir):
     log.info("beep_beep plugin starting (%s)", plugin_dir)
-
-    gui_inst.init_gui(plugin_dir, beep_inst)
-
-    history_inst.aggregate_most_recent_commanders(first_run=True)
-
-    aggregated = history_inst.aggregated_commanders
-    
-    log.info(aggregated)
-    
-    gui_inst.add_aggregated(aggregated)
-
-    beep_inst.init_beepbeep(
-        plugin_dir=plugin_dir,
-        history_state_handles=[history_inst.history] if history_inst.history else []
-    )
-
+    history_inst.load_seen_commanders()
+    history_inst.subscribe_sound(beep_inst.handle_event)       
+    history_inst.subscribe_gui(gui_inst.add_or_update_commander)
+    history_inst.aggregated_commanders_load()
     history_inst.start_worker()
-    beep_inst.ready = True
-    
-
     return "Beep Beep"
 
 
@@ -41,10 +24,42 @@ def plugin_app(parent):
     return parent
 
 
+def journal_entry(cmdrname: str, is_beta: bool, system: str, station: str, entry: dict, state: dict) -> None:
+    event = entry.get("event")
+    system = entry.get("StarSystem", system)
+    
+    if event in ("StartUp", "LoadGame", "Resurrected", "Died"):
+        location.set(-1, system)
+
+    elif event == "SupercruiseEntry":        
+        location.set(1, system)
+        history_inst.trigger()
+
+    elif event in ("SupercruiseExit", "Location", "CarrierJump"): 
+        location.set(0, system)
+        history_inst.trigger()
+
+    elif event == "StartJump":
+        location.set(1, entry.get("StarSystem", system))
+        location.jump()
+        
+    elif event == "FsdJump":
+        history_inst.trigger()
+        
+    elif event in ("WingJoin", "WingAdd"):
+        location.set_wing(True)
+        location.wing_changed()
+    
+    elif event == "WingLeave":
+        location.set_wing(False)
+        location.wing_changed()
+    
+    log.info("Event: %s", event)
+
 def plugin_prefs(parent: "nb.Notebook", cmdr: str, is_beta: bool) -> Optional["nb.Frame"]:
     return gui_inst.options_menu(parent)
 
 
 def plugin_stop():
     history_inst.stop_worker()
-    log.info("beep_beep plugin stopped")
+    log.info("beep_beep plugin stopped!")

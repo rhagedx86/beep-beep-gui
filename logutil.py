@@ -4,14 +4,11 @@ import os
 import inspect
 from config import appname # noqa
 
-class Log:
-    instance = None
 
-    def __new__(cls, debug=False):
-        if cls.instance is None:
-            cls.instance = super().__new__(cls)
-            cls.instance._init_logger(debug)
-        return cls.instance
+class Log:
+    def __init__(self, debug=False):
+        self.beep_logger = None
+        self._init_logger(debug)
 
     def _init_logger(self, debug):
         frame = inspect.stack()[2]
@@ -37,6 +34,7 @@ class Log:
         self.beep_logger = logger
 
     def __getattr__(self, name):
-        return getattr(self.beep_logger, name) 
+        return getattr(self.beep_logger, name)
+
 
 log = Log(debug=False)

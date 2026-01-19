@@ -2,34 +2,35 @@ import os
 import json
 import threading
 
-PLUGIN_CONFIG_FILE = "beepbeep_config.json"
-
 class BeepBeepConfig:
-    def __init__(self, plugin_dir: str):
-        self.plugin_dir = plugin_dir
+    def __init__(self):
+        self.plugin_dir = os.path.dirname(__file__)
+        self.config_file = "beepbeep_config.json"
         self.lock = threading.Lock()
         self.config = {}
+        self.load_config()
 
     def load_config(self):
-        path = os.path.join(self.plugin_dir, PLUGIN_CONFIG_FILE)
+        path = os.path.join(self.plugin_dir, self.config_file)
         if os.path.isfile(path):
             try:
-                with open(path, "r") as f:
+                with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 with self.lock:
                     self.config.update(data)
-            except Exception:
-                return False
+                    
+            except (OSError, json.JSONDecodeError):
+                pass
 
     def save_config(self):
-        path = os.path.join(self.plugin_dir, PLUGIN_CONFIG_FILE)
+        path = os.path.join(self.plugin_dir, self.config_file)
         try:
             with self.lock:
-                with open(path, "w") as f:
+                with open(path, "r", encoding="utf-8") as f:
                     json.dump(self.config, f, indent=2)
-            return True
-        except Exception:
-            return False
+                    
+        except (OSError, json.JSONDecodeError):
+            pass
 
     def get_config(self, attr: str, default=None):
         with self.lock:
@@ -40,6 +41,4 @@ class BeepBeepConfig:
             self.config[attr] = value
 
 
-plugin_dir = os.path.dirname(__file__)
-config = BeepBeepConfig(plugin_dir)
-config.load_config()
+config = BeepBeepConfig()

@@ -1,24 +1,18 @@
+from datetime import datetime, timezone
 import tkinter as tk
 from tkinter import ttk
-import json
+import tkinter.font as tkFont
 import os
 import myNotebook as nb # noqa
-from logutil import log
-from datetime import datetime, timezone
 from beep_beep_config import config
 from commander_history import history_inst
-import tkinter.font as tkFont
-
-
+from beep_beep import beep_inst
+from sound_loader import sound_inst
 
 
 class SeenCommandersGUI:
     def __init__(self):
-        self.initialized = False
-        self.plugin_dir = None
-        self.json_file_path = None
-        self.sounds_dir = None
-        self.seen_data = {}
+        self.plugin_dir = os.path.dirname(__file__)
         self.tree_items = {} 
         self.tree = None 
         self.name_vars = {}
@@ -27,8 +21,10 @@ class SeenCommandersGUI:
         self.sound_vars = {}
         self.window = None
         self.parent = None
+        self.scrollbar = None
+        self.options_button = None
+        self.resize_after_id = None
         self.row_offset = 0
-        self.sound_files = []
         self.sort_field = "last_seen"
         self.sort_asc = False       
         self.refresh_interval = 5000        
@@ -38,55 +34,14 @@ class SeenCommandersGUI:
             "sound": {},
             "last_seen": {},
         }        
+
         
-        
-   
+     
+    def on_history_event(self, data):
+        self.add_or_update_commander(data)
+        if self.window and self.window.winfo_exists():
+            self.refresh_gui()
 
-    def init_gui(self, plugin_dir, beep_inst):
-        if self.initialized:
-            raise RuntimeError("SeenCommandersGUI already initialized")
-
-        self.plugin_dir = plugin_dir
-        self.json_file_path = os.path.join(plugin_dir, "seen_commanders.json")
-        self.sounds_dir = os.path.join(plugin_dir, "sounds")
-
-        self.sound_files = self.get_sound_files()
-        self.load_seen_commanders()
-
-        self.beep_inst = beep_inst
-
-        self.initialized = True
-        log.info("SeenCommandersGUI initialized with plugin_dir: %s", plugin_dir)
-
-
-
-    def get_sound_files(self):
-        if not os.path.isdir(self.sounds_dir):
-            return []
-    
-        files = sorted(
-            f for f in os.listdir(self.sounds_dir)
-            if os.path.isfile(os.path.join(self.sounds_dir, f))
-            and f.lower().endswith((".wav", ".mp3"))
-        )
-    
-        if "none.wav" not in files:
-            files.append("none.wav")
-    
-        return files
-    
-    
-    def load_seen_commanders(self):
-        if not os.path.isfile(self.json_file_path) or os.path.getsize(self.json_file_path) == 0:
-            self.seen_data = {}
-            log.info("No seen_commanders.json found or file is empty, starting empty")
-            return
-        try:
-            with open(self.json_file_path, "r") as f:
-                self.seen_data = json.load(f)
-        except Exception:
-            log.exception("Failed to load seen_commanders.json, starting empty")
-            self.seen_data = {}
 
     def format_time_ago(self, ts_iso: str) -> str:
         try:
@@ -103,15 +58,14 @@ class SeenCommandersGUI:
 
             if days > 0:
                 return f"{days} d {hours} h ago"
-            elif hours > 0:
+            if hours > 0:
                 return f"{hours} h {minutes} min ago"
-            elif minutes > 0:
+            if minutes > 0:
                 return f"{minutes} min {sec} s ago"
-            else:
-                return f"{seconds} s ago"
-        except Exception:
-            return ts_iso
-
+            return f"{seconds} s ago"
+        
+        except (ValueError, TypeError):
+            return ts_iso            
 
     
 
@@ -186,7 +140,7 @@ class SeenCommandersGUI:
         self.attach_resize_listener()
         
         
-        def enforce_column_limits(event):
+        def enforce_column_limits(_event):
             total_width = self.tree.winfo_width()
 
             limits = {
@@ -212,7 +166,7 @@ class SeenCommandersGUI:
     
         self.resize_after_id = None 
     
-        def on_resize(event):
+        def on_resize(_event):
             if self.resize_after_id is not None:
                 self.window.after_cancel(self.resize_after_id)
     
@@ -239,7 +193,7 @@ class SeenCommandersGUI:
         self.tree.bind("<Return>", self.on_tree_enter_pressed)
         
 
-    def on_tree_enter_pressed(self, event):
+    def on_tree_enter_pressed(self, _event):
         selection = self.tree.selection()
         if not selection:
             return
@@ -259,12 +213,13 @@ class SeenCommandersGUI:
             y_root = self.tree.winfo_rooty() + 50
     
         class FakeEvent:
-            pass
+            def __init__(self, y, x_root, y_root):
+                self.y = y
+                self.x_root = x_root
+                self.y_root = y_root            
+            
     
-        e = FakeEvent()
-        e.y = y + height // 2
-        e.x_root = x_root
-        e.y_root = y_root
+        e = FakeEvent(y + height // 2, x_root, y_root)
     
         self.on_tree_double_click_popup(e)        
     
@@ -277,7 +232,7 @@ class SeenCommandersGUI:
         if not cmdr_id:
             return
     
-        info = self.seen_data[cmdr_id]
+        info = history_inst.seen_data[cmdr_id]
     
         popup = tk.Toplevel(self.window)
         popup.title(f"Edit Commander {info.get('name', 'unknown')}")
@@ -293,8 +248,8 @@ class SeenCommandersGUI:
         name_entry.icursor(0)
     
         tk.Label(popup, text="Sound:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        sound_var = tk.StringVar(value=info.get("sound", "neutral.wav"))
-        combo = ttk.Combobox(popup, textvariable=sound_var, values=self.sound_files, state="readonly")
+        sound_var = tk.StringVar(value=info.get("sound", sound_inst.neutral))
+        combo = ttk.Combobox(popup, textvariable=sound_var, values=sound_inst.sound_files, state="readonly")
         combo.grid(row=1, column=1, padx=5, pady=5)
     
         def save_popup_changes():
@@ -303,14 +258,14 @@ class SeenCommandersGUI:
     
             self.name_vars[cmdr_id].set(new_name)
             self.sound_vars[cmdr_id].set(new_sound)
-    
-            self.seen_data[cmdr_id]["name"] = new_name
-            self.seen_data[cmdr_id]["sound"] = new_sound
-    
+            
+            history_inst.seen_data[cmdr_id]["name"] = new_name
+            history_inst.seen_data[cmdr_id]["sound"] = new_sound
+            
             self.tree.set(row_id, "name", new_name)
             self.tree.set(row_id, "sound", new_sound)
     
-            self.save_changes()  # always save
+            history_inst.save_seen_commanders()
     
             sort_field = config.get_config("sort_field", "last_seen")
             sort_asc = config.get_config("sort_asc", False)
@@ -320,16 +275,15 @@ class SeenCommandersGUI:
     
         tk.Button(popup, text="Save", command=save_popup_changes).grid(row=2, column=0, columnspan=2, pady=10)
     
-        # Bind Enter in Name entry → move to combo
-        def on_name_enter(event):
+        def on_name_enter(_event):
             combo.focus_set()
-            combo.event_generate('<Down>')  # open the dropdown
-            return "break"  # prevent default
+            combo.event_generate('<Down>')
+            return "break"
     
         name_entry.bind("<Return>", on_name_enter)
     
-        # Bind Enter in combo → save popup
-        def on_combo_enter(event):
+    
+        def on_combo_enter(_event):
             save_popup_changes()
             return "break"
     
@@ -377,9 +331,11 @@ class SeenCommandersGUI:
             self.last_seen_vars.clear()
             self.tree_items = {}
     
-        for cmdr_id in self.seen_data:
-            if cmdr_id not in getattr(self, "tree_items", {}):
-                self.add_row(cmdr_id)
+
+        if history_inst.seen_data:
+            new_ids = [cmdr_id for cmdr_id in history_inst.seen_data if cmdr_id not in self.tree_items]
+            if new_ids:
+                self.add_rows(new_ids)
     
         self.sort_rows(sort_field, sort_asc)
         
@@ -416,7 +372,8 @@ class SeenCommandersGUI:
             self.sort_asc = not self.sort_asc
         else:
             self.sort_field = field
-            self.sort_asc = True if field != "last_seen" else False
+            self.sort_asc = field != "last_seen"
+
     
         config.set_config("sort_field", self.sort_field)
         config.set_config("sort_asc", self.sort_asc)
@@ -424,44 +381,25 @@ class SeenCommandersGUI:
     
         self.sort_rows(self.sort_field, self.sort_asc)
     
+            
     
-    def add_row(self, cmdr_id):
-        info = self.seen_data[cmdr_id]
-    
-        if cmdr_id not in self.name_vars:
-            self.name_vars[cmdr_id] = tk.StringVar(value=info.get("name", "unknown"))
-        if cmdr_id not in self.sound_vars:
-            sound = info.get("sound", "neutral.wav")
-            if sound not in self.sound_files:
-                sound = "neutral.wav" if "neutral.wav" in self.sound_files else (self.sound_files[0] if self.sound_files else "")
-            self.sound_vars[cmdr_id] = tk.StringVar(value=sound)
-        if cmdr_id not in self.last_seen_vars:
-            self.last_seen_vars[cmdr_id] = tk.StringVar(value=self.format_time_ago(info.get("last_seen")))
-    
-        item = self.tree.insert("", "end", values=(
-            self.name_vars[cmdr_id].get(),
-            self.sound_vars[cmdr_id].get(),
-            self.last_seen_vars[cmdr_id].get()
-        ))
-    
+    def add_rows(self, cmdr_ids: list[str]):
         if not hasattr(self, "tree_items"):
             self.tree_items = {}
-        self.tree_items[cmdr_id] = item
- 
         if not hasattr(self, "widgets"):
             self.widgets = {}
-        self.widgets[cmdr_id] = {}
-   
-
-    def sort_rows(self, sort_field, sort_asc):
+    
+        sort_field = getattr(self, "sort_field", "last_seen")
+        sort_asc = getattr(self, "sort_asc", False)
+    
         def sort_key(cmdr_id):
             if sort_field == "name":
                 return self.name_vars[cmdr_id].get().lower()
-            elif sort_field == "sound":
+            if sort_field == "sound":
                 return self.sound_vars[cmdr_id].get().lower()
-            elif sort_field == "last_seen":
+            if sort_field == "last_seen":
                 try:
-                    ts = datetime.fromisoformat(self.seen_data[cmdr_id].get("last_seen", ""))
+                    ts = datetime.fromisoformat(history_inst.seen_data[cmdr_id].get("last_seen", ""))
                     if ts.tzinfo is None:
                         ts = ts.replace(tzinfo=timezone.utc)
                     return ts
@@ -469,59 +407,117 @@ class SeenCommandersGUI:
                     return datetime(1, 1, 1, tzinfo=timezone.utc)
             return cmdr_id
     
-        sorted_ids = sorted(self.seen_data.keys(), key=sort_key, reverse=not sort_asc)
+        all_ids = list(history_inst.seen_data.keys())
+        sorted_ids = sorted(all_ids, key=sort_key, reverse=not sort_asc)
     
-        for cmdr_id in sorted_ids:
-            self.tree.move(self.tree_items[cmdr_id], "", "end")
+        for cmdr_id in cmdr_ids:
+            info = history_inst.seen_data[cmdr_id]
+    
+            self.name_vars.setdefault(cmdr_id, tk.StringVar(value=info.get("name", "unknown")))
+            if cmdr_id not in self.sound_vars:
+                
+                sound = info.get("sound", sound_inst.neutral)
+            
+                if sound not in sound_inst.sound_files:
+                    sound = sound_inst.neutral                
+
+                self.sound_vars[cmdr_id] = tk.StringVar(value=sound)
+            self.last_seen_vars.setdefault(cmdr_id, tk.StringVar(value=self.format_time_ago(info.get("last_seen"))))
+    
+            index = 0
+            for sid in sorted_ids:
+                if sid == cmdr_id:
+                    break
+                if sid in self.tree_items:
+                    index += 1
+    
+            item = self.tree.insert("", index, values=(
+                self.name_vars[cmdr_id].get(),
+                self.sound_vars[cmdr_id].get(),
+                self.last_seen_vars[cmdr_id].get()
+            ))
+            self.tree_items[cmdr_id] = item
+            self.widgets[cmdr_id] = {}
 
 
+        
+    def add_or_update_commander(self, data):
+        if not isinstance(data, list):
+            data = [data]
+    
+        new_cmdr_ids = []
+    
+        for info in data:
+            cmdr_id = info["commander_id"]
+            cmdr_id_str = str(cmdr_id)
+    
+    
+            self.name_vars.setdefault(cmdr_id_str, tk.StringVar()).set(info.get("name", "unknown"))
+            self.sound_vars.setdefault(cmdr_id_str, tk.StringVar()).set(info.get("sound", sound_inst.neutral))
+            self.last_seen_vars.setdefault(cmdr_id_str, tk.StringVar()).set(self.format_time_ago(info["last_seen"]))
+    
+            item_id = self.tree_items.get(cmdr_id_str)
+            if self.window and self.window.winfo_exists() and hasattr(self, 'tree') and self.tree.winfo_exists():
+                if item_id:
+                    self.tree.set(item_id, "last_seen", self.format_time_ago(info["last_seen"]))
+                    self.tree.set(item_id, "name", info.get("name", "unknown"))
+                    self.tree.set(item_id, "sound", info.get("sound", sound_inst.neutral))
+                else:
+                    new_cmdr_ids.append(cmdr_id_str)
+    
+        if new_cmdr_ids and self.window and self.window.winfo_exists() and hasattr(self, 'tree') and self.tree.winfo_exists():
+            self.add_rows(new_cmdr_ids)
+    
+        if self.window and self.window.winfo_exists() and hasattr(self, 'tree') and self.tree.winfo_exists():
+            sort_field = config.get_config("sort_field", "last_seen")
+            sort_asc = config.get_config("sort_asc", False)
+            self.sort_rows(sort_field, sort_asc)
+       
 
-    def add_or_update_commander(self, cmdr_id, info: dict, batch: bool = False):
-        cmdr_id_str = str(cmdr_id)
-        is_new = cmdr_id_str not in self.seen_data
     
-        self.seen_data[cmdr_id_str] = info.copy()
     
-        self.name_vars.setdefault(cmdr_id_str, tk.StringVar()).set(info.get("name", "unknown"))
-        self.sound_vars.setdefault(cmdr_id_str, tk.StringVar()).set(info.get("sound", "neutral.wav"))
-        self.last_seen_vars.setdefault(cmdr_id_str, tk.StringVar()).set(self.format_time_ago(info["last_seen"]))
+    def sort_rows(self, sort_field, sort_asc):
+        if not hasattr(self, "tree") or not self.window or not self.window.winfo_exists():
+            return        
+        
+        def sort_key(cmdr_id):
+            if sort_field == "name":
+                return self.name_vars[cmdr_id].get().lower()
+            if sort_field == "sound":
+                return self.sound_vars[cmdr_id].get().lower()
+            if sort_field == "last_seen":
+                try:
+                    ts = datetime.fromisoformat(history_inst.seen_data[cmdr_id].get("last_seen", ""))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    return ts
+                except Exception:
+                    return datetime(1, 1, 1, tzinfo=timezone.utc)
+            return cmdr_id
     
-        if is_new and self.window and self.window.winfo_exists():
-            self.add_row(cmdr_id_str)
+        sorted_ids = sorted(history_inst.seen_data.keys(), key=sort_key, reverse=not sort_asc)
     
-        if not batch and self.window and self.window.winfo_exists():
-            self.refresh_gui()
+        for index, cmdr_id in enumerate(sorted_ids):
+            item_id = self.tree_items.get(cmdr_id)
+            if not item_id:
+                continue
+            current_index = self.tree.index(item_id)
+            if current_index != index:
+                self.tree.move(item_id, "", index)
     
+        
 
-    def save_changes(self):
-        try:
-            with open(self.json_file_path, "w") as f:
-                json.dump(self.seen_data, f, indent=2)
-        except Exception:
-            log.exception("Failed to save JSON file: %s", self.json_file_path)
-
-
-    
     def refresh_gui(self):
         if not getattr(self, "tree", None) or not self.tree.winfo_exists():
             return
     
-        for cmdr_id, data in self.seen_data.items():
+        for cmdr_id, data in history_inst.seen_data.items():
             item_id = self.tree_items.get(cmdr_id)
             new_time = self.format_time_ago(data["last_seen"])
     
             if item_id:
                 self.tree.set(item_id, "last_seen", new_time)
-            else:
-                self.add_row(cmdr_id) 
-    
-        sort_field = config.get_config("sort_field", "last_seen")
-        sort_asc = config.get_config("sort_asc", False)
-        
-        self.sort_rows(sort_field, sort_asc)
-        self.save_changes()
 
-        
     def start_auto_refresh(self):
         def refresh():
             self.refresh_gui()
@@ -529,46 +525,12 @@ class SeenCommandersGUI:
                 self.window.after(self.refresh_interval, refresh)
         refresh()
         
+    def open_sounds_folder(self):
+        folder = os.path.join(self.plugin_dir, "sounds")
+        os.makedirs(folder, exist_ok=True) 
+        os.startfile(folder) 
+    
 
-    def add_aggregated(self, new_data: dict):
-        added = 0
-        for cmdr_id, info in new_data.items():
-            cmdr_id_str = str(cmdr_id)
-    
-            existing = self.seen_data.get(cmdr_id_str, {})
-    
-            self.seen_data[cmdr_id_str] = {
-                "name": existing.get("name", "unknown"),
-                "sound": existing.get("sound", "neutral.wav"),
-                "last_seen": info["last_seen"],
-            }
-    
-            if cmdr_id_str not in self.tree_items:
-                added += 1
-    
-        if added:
-            log.info(f"Added {added} new commanders from aggregation")
-            self.save_changes()
-            self.refresh_gui()
-
-
-    def add_slider(self, frame, row, label, var, *, attr=None, from_=0, to=100):
-        """Add a slider that automatically updates target.attr and saves to config."""
-        tk.Label(frame, text=label).grid(row=row, column=0, padx=5, pady=5, sticky="w")
-        slider = tk.Scale(frame, from_=from_, to=to, orient="horizontal", variable=var)
-        slider.grid(row=row, column=1, padx=5, pady=5, sticky="ew")
-    
-        def on_change(*_):
-            config.set_config(attr, var.get())
-    
-        def on_save(event=None):
-            config.save_config()
-
-        var.trace_add("write", on_change)
-        slider.bind("<ButtonRelease-1>", on_save)
-        return row + 1
-    
-    
     def add_checkbox(self, frame, row, text, var, *, target=None, attr=None):
         def on_toggle():
             v = var.get()
@@ -579,34 +541,167 @@ class SeenCommandersGUI:
                 config.save_config()
     
         chk = tk.Checkbutton(frame, text=text, variable=var, command=on_toggle)
-        chk.grid(row=row, column=1, padx=5, pady=5, sticky="w")
+        chk.grid(row=row, column=0, padx=5, pady=5, sticky="w")
         return row + 1
     
+
+    def add_slider(self, frame, row, label, var, *, attr=None, from_=0, to=100):
+        """Add a slider (Scale) that automatically updates target.attr and saves to config."""
+        tk.Label(frame, text=label).grid(row=row, column=0, padx=5, pady=5, sticky="w")
+        slider = tk.Scale(frame, from_=from_, to=to, orient=tk.HORIZONTAL, variable=var)
+        slider.grid(row=row, column=1, padx=5, pady=5, sticky="we")
     
+        def on_change(*_):
+            if attr:
+                config.set_config(attr, var.get())
+    
+        def on_save(_event):
+            config.save_config()
+    
+        var.trace_add("write", on_change)
+        slider.bind("<ButtonRelease-1>", on_save)
+        return row + 1
+    
+    def add_info_box(self, frame, row, text, *, title="Info", columnspan=2):
+        info_frame = tk.LabelFrame(frame, text=title, bd=2, relief="groove")
+        info_frame.grid(
+            row=row,
+            column=0,
+            columnspan=columnspan,
+            padx=5,
+            pady=(2, 8),
+            sticky="ew"
+        )
+    
+        label = tk.Label(
+            info_frame,
+            text=text,
+            justify="left",
+            wraplength=330
+        )
+        label.pack(padx=10, pady=6, fill="x")
+    
+        return row + 1
+
     def options_menu(self, parent):
+        """Opt Menu for both options button and plugin options menu"""
         frame = nb.Frame(parent)
         frame.columnconfigure(1, weight=1)
+        frame.columnconfigure(0, weight=1)
+        
+        
         row = 0
+
+        row = self.add_slider(
+            frame,
+            row,
+            "Alert Volume (%)",
+            tk.IntVar(value=config.get_config("volume", 100)),
+            from_=0,
+            to=100,
+            attr="volume"
+        )
+        
+        
+        tk.Button(
+            frame,
+            text="Open Sounds Folder",
+            command=self.open_sounds_folder
+        ).grid(row=row, column=0, padx=5, sticky="w")
     
-        row = self.add_slider(frame, row, "Alert Volume (%)", tk.IntVar(value=config.get_config("volume", 100)), from_=0, to=100, attr="volume")
-        tk.Button(frame, text="▶", command=lambda: self.beep_inst.play_sound("neutral.wav")).grid(row=row - 1, column=2, padx=5)
+        tk.Button(
+            frame,
+            text="▶ Play",
+            command=lambda: beep_inst.play_sound(sound_inst.neutral)
+        ).grid(row=row, column=1, padx=5, sticky="e")
+        
     
-        row = self.add_slider(frame, row, "Sound Cooldown (sec)", tk.IntVar(value=config.get_config("cooldown", 15)), from_=1, to=15, attr="cooldown")
-        row = self.add_slider(frame, row, "Check for Updates (sec)", tk.IntVar(value=config.get_config("poll_interval", 15)), from_=1, to=15,attr="poll_interval")
-        row = self.add_slider(frame, row, "Wing Alert Cooldown (min)", tk.IntVar(value=config.get_config("wing_cooldown",60)), from_=1, to=1440, attr="wing_cooldown")
-        row = self.add_checkbox(frame, row, "Notify on WingMember encounters", tk.BooleanVar(value=config.get_config("wing_notify", False)), attr="wing_notify")
+        row += 1
     
-        info_text = ("To add sounds, place them in the 'sounds' folder inside the plugin.\n"
-                     "Only WAV and MP3 files are supported.\n"
-                     "The default files 'foe.wav', 'friend.wav', and 'neutral.wav' must remain.\n"
-                     "But can be replaced as long as file type and name are the same."
-                     "Restart EDMC to load newly added sounds.\n\n"
-                     "To edit a entry Double click, or select a row an hit enter.")
-        tk.Message(frame, text=info_text, width=350).grid(row=row, column=0, columnspan=2, padx=5, pady=(10, 0))
+        row = self.add_info_box(
+            frame,
+            row,
+            (
+                "To add sounds, place them in the 'sounds' folder inside the plugin.\n"
+                "Only WAV and MP3 files are supported.\n"
+                "The default files 'foe', 'friend', and 'neutral' must exist.\n"
+                "On plugin startup, the newest file with each name will be loaded.\n"
+                "Restart EDMC to load newly added sounds."
+            ),
+            title="Sound Files"
+        )
+        
+        row = self.add_checkbox(
+            frame,
+            row,
+            "Beep on leaving",
+            tk.BooleanVar(value=config.get_config("beep_on_leave", False)),
+            attr="beep_on_leave"
+        )
+
+        row = self.add_info_box(
+            frame,
+            row,
+            (
+                "When enabled, if a CMDR or yourself leaves your instance, a sound will play.\n"
+                "For example, if you are in Supercruise and someone leaves, the sound will play."
+            ),
+            title="Beep on leaving"
+        )        
     
+        row = self.add_checkbox(
+            frame,
+            row,
+            "Notify on Wing Member encounters",
+            tk.BooleanVar(value=config.get_config("wing_notify", False)),
+            attr="wing_notify"
+        )
+    
+        row = self.add_info_box(
+            frame,
+            row,
+            (
+                "When disabled, no sounds will play for wing members.\n"
+                "This setting only affects wing-related alerts."
+            ),
+            title="Wing Notify"
+        )
+    
+        row = self.add_info_box(
+            frame,
+            row,
+            (
+                "If EDMC is started while the game is already running, commanders who are\n"
+                "already in your instance may trigger sounds in reverse — for example,\n"
+                "alerts may play when they leave instead of when they arrive.\n\n"
+                "Going to any EMPTY instance (Normal Space, Supercruise, or Hyperspace) and\n"
+                "waiting ~5 seconds, or simply , will reset this.\n\n"
+                "While this system is not perfect it will work in most cases.\n"
+                "With only a couple sound events not happening when they should."
+            ),
+            title="General Notes"
+        )
+        
+        font = tkFont.nametofont("TkDefaultFont")
+        longest_px = 0
+    
+        def find_longest_line(widget):
+            nonlocal longest_px
+            for child in widget.winfo_children():
+                
+                if isinstance(child, tk.Label):
+                    
+                    for line in child.cget("text").split("\n"):
+                        longest_px = max(longest_px, font.measure(line)
+                                         )
+                if isinstance(child, (tk.Frame, tk.LabelFrame)):
+                    find_longest_line(child)
+    
+        find_longest_line(frame)
+    
+        frame.config(width=longest_px + 40)
+        frame.pack_propagate(False)        
         return frame
-
-
 
 
 

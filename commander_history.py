@@ -3,96 +3,55 @@ import json
 import os
 import re
 import threading
-from dataclasses import dataclass
-from typing import Callable, List, Optional, Dict
+import time
+from typing import Callable, Dict, TypedDict
 from logutil import log
 from beep_beep_config import config
-import time
+from location import location
 
 
-@dataclass
-class CommanderAndTimestamp:
-    commander_id: int
-    timestamp: datetime.datetime
+class CommanderEntry(TypedDict):
+    commander_id: str
+    name: str
+    sound: str
+    last_seen: str
 
+CommanderDict = Dict[str, CommanderEntry]  
 
-class CommanderHistory:
-    def __init__(
-        self,
-        initial_state: Optional[List[CommanderAndTimestamp]] = None,
-        name: str = "None"
-    ):
-        self.name = name
-        self.cmdr_history: Dict[int, datetime.datetime] = {}
-        self.listeners: List[Callable[[List[CommanderAndTimestamp]], None]] = []
-        self.cmdr_history_prev: List[int] = []
-
-        initial_state = initial_state or []
-        for entry in initial_state:
-            self.cmdr_history[entry.commander_id] = entry.timestamp
-
-        self.most_recent_timestamp = max((e.timestamp for e in initial_state), default=datetime.datetime.min)
-
-    def subscribe_new_listener(self, cb: Callable[[List[CommanderAndTimestamp]], None]):
-        self.listeners.append(cb)
-
-    def find_entry(self, commander_id: int) -> Optional[CommanderAndTimestamp]:
-        if commander_id in self.cmdr_history:
-            return CommanderAndTimestamp(commander_id, self.cmdr_history[commander_id])
-        return None
-
-    def emit_events(self):
-        data = [CommanderAndTimestamp(cid, self.cmdr_history[cid]) for cid in self.calculate_current_commander_ids()]
-        for cb in self.listeners:
-            cb(data)
-
-    def calculate_current_commander_ids(self) -> List[int]:
-        return [cid for cid, ts in self.cmdr_history.items() if ts >= self.most_recent_timestamp]
-
-    def push_new_state(self, entries: List[CommanderAndTimestamp]):
-        needs_emit = [self.update_entry(entry) for entry in entries]
-        calculated_state = self.calculate_current_commander_ids()
-        is_subset = all(entry in self.cmdr_history_prev for entry in calculated_state)
-        self.cmdr_history_prev = calculated_state.copy()
-        if any(needs_emit) and not is_subset:
-            self.emit_events()
-
-    def update_entry(self, entry: CommanderAndTimestamp) -> bool:
-        is_timestamp_newer = entry.timestamp > self.most_recent_timestamp
-        if is_timestamp_newer:
-            self.most_recent_timestamp = entry.timestamp
-        is_entry_new = entry.commander_id not in self.cmdr_history
-        self.cmdr_history[entry.commander_id] = entry.timestamp
-        return is_timestamp_newer or is_entry_new
-
-    def get_most_recent_timestamp(self) -> datetime.datetime:
-        return self.most_recent_timestamp
 
 
 class CommanderHistoryManager:
     def __init__(self):
+        self.plugin_dir = os.path.dirname(__file__)
+        self.seen_data: CommanderDict = {}
         self.commander_history_dir = os.path.join(
             os.getenv("LOCALAPPDATA", ""), "Frontier Developments", "Elite Dangerous", "CommanderHistory"
         )
-
+        self.json_file_path = os.path.join(self.plugin_dir, "seen_commanders.json")
         self.last_modified_timestamp: datetime.datetime = datetime.datetime.min
-        self.aggregated_commanders: Dict[str, Dict] = {}
-        self.history: Optional[CommanderHistory] = None
-        self.worker_thread: Optional[threading.Thread] = None
+        self.listeners: list[Callable[[list[CommanderEntry]], None]] = []
+        self._gui_listener: Callable[[dict], None] | None = None
+        self._sound_listener: Callable[[dict], None] | None = None        
+        self.worker_thread: threading.Thread | None = None
         self.worker_stop_event = threading.Event()
+        self.changed = False
+        self.last_data: dict | None = None
+        self.data_received = False
+        self._trigger = False
+        self._reset_timer: threading.Timer | None = None
+        self._lock = threading.Lock()    
 
-        
+                
+   
     @property
-    def wing_notify(self):
-        return config.get_config("wing_notify", True)
+    def wing_notify(self) -> bool:
+        return config.get_config("wing_notify", False)
+    
     
     @property
-    def poll_interval(self):
-        return config.get_config("poll_interval", 5)    
-        
-    @property
-    def wing_cooldown(self):
-        return config.get_config("wing_cooldown", 60)        
+    def beep_on_leave(self) -> bool:
+        return config.get_config("beep_on_leave", False)    
+
 
     @staticmethod
     def is_cmdr_history_file(name: str) -> bool:
@@ -100,107 +59,316 @@ class CommanderHistoryManager:
 
     @staticmethod
     def check_if_file_is_newer_than_timestamp(filepath: str, timestamp: datetime.datetime) -> bool:
-        return datetime.datetime.fromtimestamp(os.path.getmtime(filepath)) > timestamp
+        file_mtime = datetime.datetime.fromtimestamp(os.path.getmtime(filepath))
+        return file_mtime > timestamp
 
-    def aggregate_most_recent_commanders(self, first_run=False) -> List[CommanderAndTimestamp]:
+
+
+    def subscribe_gui(self, cb: Callable[[dict], None]):
+        self._gui_listener = cb
+    
+    def subscribe_sound(self, cb: Callable[[dict], None]):
+        self._sound_listener = cb
+    
+    
+
+    def load_seen_commanders(self):
+        if not os.path.isfile(self.json_file_path) or os.path.getsize(self.json_file_path) == 0:
+            self.seen_data = {}
+            return
+    
+        try:
+            with open(self.json_file_path, "r", encoding="utf-8") as f:
+                self.seen_data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            log.exception("Failed to load seen_commanders.json, starting empty")
+            self.seen_data = {}
+
+
+    def save_seen_commanders(self):
+        if self.json_file_path is None:
+            return
+    
+        try:
+            with open(self.json_file_path, "w", encoding="utf-8") as f:
+                json.dump(self.seen_data, f, indent=2)
+        except (OSError, TypeError):
+            log.exception("Failed to save seen_commanders.json")
+
+
+
+    
+    def aggregate_most_recent_commanders(self, first_run=False):
+        self.changed = False
         try:
             abs_paths = [
-                os.path.join(self.commander_history_dir, f)
-                for f in os.listdir(self.commander_history_dir)
-                if os.path.isfile(os.path.join(self.commander_history_dir, f)) and self.is_cmdr_history_file(f)
+                e.path
+                for e in os.scandir(self.commander_history_dir)
+                if e.is_file() and self.is_cmdr_history_file(e.name)
             ]
-        except Exception as err:
+        except (FileNotFoundError, PermissionError, OSError) as err:
             log.error("Failed to list directory %s", self.commander_history_dir)
-            log.error(err)
-            return []
+            log.exception(err)
+            return None
 
+    
         if not abs_paths:
-            return []
+            return None
+    
+        file_mtimes = {f: os.path.getmtime(f) for f in abs_paths if os.path.getsize(f) > 0}
+    
+        latest_timestamp = self.last_modified_timestamp
+    
+        if first_run:
+            files_to_process = abs_paths
+            combined_data = {}
+        
+            for file_path in files_to_process:
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    continue
+        
+                combined_data.update(data)
+        
+                file_mtime_dt = datetime.datetime.fromtimestamp(file_mtimes[file_path])
+                if not latest_timestamp or file_mtime_dt > latest_timestamp:
+                    latest_timestamp = file_mtime_dt
+        
+            if not combined_data:
+                return None
+        
+            data_to_return = combined_data
+    
+        else:
+            files_to_process = [
+                f for f, mtime in file_mtimes.items()
+                if not self.last_modified_timestamp or mtime > self.last_modified_timestamp.timestamp()
+            ]
+            if not files_to_process:
+                return None
+    
+            newest_file = max(files_to_process, key=lambda f: file_mtimes[f])
+    
+            try:
+                with open(newest_file, "r", encoding="utf-8") as f:
+                    data_to_return = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                return None
 
-        new_files = [f for f in abs_paths if self.check_if_file_is_newer_than_timestamp(f, self.last_modified_timestamp)]
-        if first_run and not new_files:
-            new_files = [max(abs_paths, key=os.path.getmtime)]
+    
+            latest_timestamp = datetime.datetime.fromtimestamp(file_mtimes[newest_file])
+    
+        
+        if self.last_data != data_to_return:
+            self.changed = True
+            self.last_data = data_to_return
+    
+        if not self.changed:
+            return None
+    
+        log.info("New entries!")
+        if self._trigger:
+            self.data_received = True
+    
+        self.last_modified_timestamp = latest_timestamp
+        return data_to_return
 
-        if not new_files:
-            self.last_modified_timestamp = datetime.datetime.now()
-            return []
+    
 
-        newest_file = max(new_files, key=os.path.getmtime)
-
-        try:
-            with open(newest_file, "r") as f:
-                data = json.load(f)
-        except Exception as err:
-            log.error("Failed to read json file %s. Skipping", newest_file)
-            log.error(err)
-            return []
-
-        entries = []
-        for entry in data.get("Interactions", []):
-            interactions = entry.get("Interactions", [])
-            if "Met" not in interactions:
-                continue
-            if not self.wing_notify and "WingMember" in interactions:
-                continue
-            ts = datetime.datetime.fromtimestamp(
-                (datetime.datetime(1601, 1, 1) + datetime.timedelta(seconds=entry["Epoch"])).timestamp()
-            )
-            entries.append(CommanderAndTimestamp(entry["CommanderID"], ts))
-
-        self.last_modified_timestamp = datetime.datetime.now()
-
-        if not entries:
-            return []
-
-        if first_run and self.history is None:
-            self.history = CommanderHistory(entries, os.path.basename(newest_file))
-            for e in entries:
-                self.aggregated_commanders[str(e.commander_id)] = {
-                    "name": "unknown",
-                    "sound": "neutral.wav",
-                    "last_seen": e.timestamp.isoformat(),
+    def aggregated_commanders_load(self):
+        data = self.aggregate_most_recent_commanders(True)
+        if data:
+            entries = data.get("Interactions", [])
+            frontier_epoch = datetime.datetime(1601, 1, 1)
+        
+            for entry in entries:
+                interactions = entry.get("Interactions", [])
+                if "Met" not in interactions:
+                    continue
+        
+                cmdr_id = str(entry["CommanderID"])
+                ts = frontier_epoch + datetime.timedelta(seconds=entry["Epoch"])
+    
+                existing = self.seen_data.get(cmdr_id)
+                if existing:
+                    last_seen_existing = datetime.datetime.fromisoformat(existing["last_seen"])
+                    if ts <= last_seen_existing:
+                        continue
+        
+         
+                info: CommanderEntry = {
+                    "commander_id": cmdr_id,
+                    "name": existing.get("name", "unknown") if existing else "unknown",
+                    "sound": existing.get("sound", "neutral.wav") if existing else "neutral.wav",
+                    "last_seen": ts.isoformat(),
                 }
-            return entries
-
-        most_recent = self.history.get_most_recent_timestamp() if self.history else datetime.datetime.min
-        new_entries = [e for e in entries if e.timestamp > most_recent]
-
-        if new_entries and self.history:
-            self.history.push_new_state(new_entries)
-            for e in new_entries:
-                self.aggregated_commanders[str(e.commander_id)] = {
-                    "name": "unknown",
-                    "sound": "neutral.wav",
-                    "last_seen": e.timestamp.isoformat(),
+        
+                self.seen_data[cmdr_id] = info
+             
+            log.info("Saving seen commanders")
+            self.save_seen_commanders()
+    
+        
+      
+    def aggregated_commanders(self):
+        data = self.aggregate_most_recent_commanders(False)
+        if data:
+    
+            entries = data.get("Interactions", [])
+            frontier_epoch = datetime.datetime(1601, 1, 1)
+        
+            beeps_to_play = []
+            changed_entries: list[CommanderEntry] = []
+        
+            now_ts = time.time()
+            jump_recent = location.jump_ts and (now_ts - location.jump_ts <= 60)
+            wing_recent = location.wing_join and (now_ts - location.wing_join <= 60)
+            
+            log.debug(f"Jump recent: {jump_recent}, jump_ts={location.jump_ts}, now={now_ts}")
+            log.debug(f"Wing recent: {wing_recent}, wing_ts={location.wing_join}, now={now_ts}")
+        
+            for entry in entries:
+                
+                interactions = entry.get("Interactions", [])
+                if "Met" not in interactions:
+                    continue
+        
+                cmdr_id = str(entry["CommanderID"])
+                ts = frontier_epoch + datetime.timedelta(seconds=entry["Epoch"])
+    
+                existing = self.seen_data.get(cmdr_id)
+                if existing:
+                    last_seen_existing = datetime.datetime.fromisoformat(existing["last_seen"])
+                    if ts <= last_seen_existing:
+                        continue
+        
+                is_wing = "WingMember" in interactions
+                
+                
+         
+                info: CommanderEntry = {
+                    "commander_id": cmdr_id,
+                    "name": existing.get("name", "unknown") if existing else "unknown",
+                    "sound": existing.get("sound", "neutral.wav") if existing else "neutral.wav",
+                    "last_seen": ts.isoformat(),
                 }
-        return new_entries
+        
+                self.seen_data[cmdr_id] = info
+                changed_entries.append(info)
+        
+                inst = location.get_instance().get(cmdr_id)
+        
+                beep_this_commander = True
+                if jump_recent and cmdr_id in location.jump_backup:
+                    prev = location.jump_backup[cmdr_id]
+                    if prev.get("here", False):
+                        log.info(
+                            "Skipping add for %s because jump just occurred and they were still here in old system",
+                            cmdr_id
+                        )
+                        continue
+    
+                
+                if is_wing and wing_recent:
+                    log.info("Skipping add for %s because wing join just occurred", cmdr_id)
+                    beep_this_commander = False
+                    continue
+        
+                if inst:
+                    if inst.get("here", True):
+                        inst["here"] = False
+                        log.info("Marked %s here=False (left system)", cmdr_id)
+                        beep_this_commander = bool(self.beep_on_leave)
 
+                    else:
+                        if inst["system"] != location.system or inst["state"] != location.state:
+                            inst["system"] = location.system
+                            inst["state"] = location.state
+                            inst["here"] = True
+                            log.info(
+                                "Updated %s to new system/state (%s, %s) and marked here=True",
+                                cmdr_id, location.system, location.state
+                            )
+                            beep_this_commander = True
+                        elif inst.get("here") is False:
+                            inst["here"] = True
+                            log.info("Marked %s here=True (returned)", cmdr_id)
+                            beep_this_commander = True
+                        else:
+                            beep_this_commander = False
+                else:
+                    location.add_instance(cmdr_id, state=location.state, system=location.system)
+                    inst = location.get_instance()[cmdr_id]
+                    inst["here"] = True
+                    log.info("Added new instance for %s in current system", cmdr_id)
+                    beep_this_commander = True
+        
+                allow_beep = not(location.wing or is_wing) or self.wing_notify
+                if allow_beep and beep_this_commander:
+                    beeps_to_play.append(info)
+                    #log.info("Appended %s to beeps_to_play", cmdr_id)
+        
+            if not changed_entries:
+                return
+        
+            if self._gui_listener and changed_entries:
+                self._gui_listener(changed_entries)
+            
+    
+            if beeps_to_play and self._sound_listener:
+                #log.info("Calling _sound_listener for %d beeps_to_play", len(beeps_to_play))
+                self._sound_listener(beeps_to_play)
+        
+            location.jump_backup = {}
+            location.jump_ts = None
+            location.wing_join = None
+        
+            self.save_seen_commanders()
+        
+      
+    def trigger(self):
+        with self._lock:
+            if self._reset_timer and self._reset_timer.is_alive():
+                self._reset_timer.cancel()
+
+            
+            self._reset_timer = threading.Timer(5.0, self._check_reset)
+            self._reset_timer.start()
+            self._trigger = True
+
+    def _check_reset(self):
+        with self._lock:
+            if not self.data_received:
+                location.instance = {}
+
+            self.data_received = False
+            self._trigger = False
 
     def start_worker(self):
         if self.worker_thread and self.worker_thread.is_alive():
             return
 
+        log.info("Starting worker!")
         self.worker_stop_event.clear()
-
-        if self.history:
-            self.history.emit_events()
-
         self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True, name="CommanderHistoryWorker")
         self.worker_thread.start()
 
     def stop_worker(self):
         self.worker_stop_event.set()
         if self.worker_thread:
-            self.worker_thread.join(timeout=5)
+            self.worker_thread.join(timeout=3)
             log.info("CommanderHistoryManager worker stopped.")
 
     def worker_loop(self):
         while not self.worker_stop_event.is_set():
             try:
-                time.sleep(self.poll_interval)
-                self.aggregate_most_recent_commanders()
+                if self.worker_stop_event.wait(1):
+                    break
+                self.aggregated_commanders()
             except Exception:
                 log.exception("Exception in CommanderHistoryManager worker loop, continuing")
-                continue
+
 
 history_inst = CommanderHistoryManager()
