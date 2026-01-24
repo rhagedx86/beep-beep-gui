@@ -18,8 +18,6 @@ class CommanderEntry(TypedDict):
 
 CommanderDict = Dict[str, CommanderEntry]  
 
-
-
 class CommanderHistoryManager:
     def __init__(self):
         self.plugin_dir = os.path.dirname(__file__)
@@ -41,17 +39,13 @@ class CommanderHistoryManager:
         self._reset_timer: threading.Timer | None = None
         self._lock = threading.Lock()    
 
-                
-   
     @property
     def wing_notify(self) -> bool:
         return config.get_config("wing_notify", False)
     
-    
     @property
     def beep_on_leave(self) -> bool:
         return config.get_config("beep_on_leave", False)    
-
 
     @staticmethod
     def is_cmdr_history_file(name: str) -> bool:
@@ -62,16 +56,12 @@ class CommanderHistoryManager:
         file_mtime = datetime.datetime.fromtimestamp(os.path.getmtime(filepath))
         return file_mtime > timestamp
 
-
-
     def subscribe_gui(self, cb: Callable[[dict], None]):
         self._gui_listener = cb
     
     def subscribe_sound(self, cb: Callable[[dict], None]):
         self._sound_listener = cb
     
-    
-
     def load_seen_commanders(self):
         if not os.path.isfile(self.json_file_path) or os.path.getsize(self.json_file_path) == 0:
             self.seen_data = {}
@@ -84,7 +74,6 @@ class CommanderHistoryManager:
             log.exception("Failed to load seen_commanders.json, starting empty")
             self.seen_data = {}
 
-
     def save_seen_commanders(self):
         if self.json_file_path is None:
             return
@@ -94,10 +83,7 @@ class CommanderHistoryManager:
                 json.dump(self.seen_data, f, indent=2)
         except (OSError, TypeError):
             log.exception("Failed to save seen_commanders.json")
-
-
-
-    
+            
     def aggregate_most_recent_commanders(self, first_run=False):
         self.changed = False
         try:
@@ -160,7 +146,6 @@ class CommanderHistoryManager:
     
             latest_timestamp = datetime.datetime.fromtimestamp(file_mtimes[newest_file])
     
-        
         if self.last_data != data_to_return:
             self.changed = True
             self.last_data = data_to_return
@@ -174,8 +159,6 @@ class CommanderHistoryManager:
     
         self.last_modified_timestamp = latest_timestamp
         return data_to_return
-
-    
 
     def aggregated_commanders_load(self):
         data = self.aggregate_most_recent_commanders(True)
@@ -210,8 +193,6 @@ class CommanderHistoryManager:
             log.info("Saving seen commanders")
             self.save_seen_commanders()
     
-        
-      
     def aggregated_commanders(self):
         data = self.aggregate_most_recent_commanders(False)
         if data:
@@ -246,8 +227,6 @@ class CommanderHistoryManager:
         
                 is_wing = "WingMember" in interactions
                 
-                
-         
                 info: CommanderEntry = {
                     "commander_id": cmdr_id,
                     "name": existing.get("name", "unknown") if existing else "unknown",
@@ -270,13 +249,11 @@ class CommanderHistoryManager:
                         )
                         continue
     
-                
                 if location.wing and is_wing and wing_recent:
                     log.info("Skipping add for %s because wing join just occurred", cmdr_id)
                     beep_this_commander = False
                     continue
 
-        
                 if inst:
                     if inst.get("here", True):
                         inst["here"] = False
@@ -306,7 +283,6 @@ class CommanderHistoryManager:
                     log.info("Added new instance for %s in current system", cmdr_id)
                     beep_this_commander = True
         
-                
                 allow_beep = False
                 
                 if not location.wing:
@@ -323,9 +299,6 @@ class CommanderHistoryManager:
             if not changed_entries:
                 return
         
-
-            
-    
             if beeps_to_play and self._sound_listener:
                 #log.info("Calling _sound_listener for %d beeps_to_play", len(beeps_to_play))
                 self._sound_listener(beeps_to_play)
@@ -337,13 +310,11 @@ class CommanderHistoryManager:
             location.wing_join = None
         
             self.save_seen_commanders()
-        
       
     def trigger(self):
         with self._lock:
             if self._reset_timer and self._reset_timer.is_alive():
                 self._reset_timer.cancel()
-
             
             self._reset_timer = threading.Timer(5.0, self._check_reset)
             self._reset_timer.start()
@@ -380,6 +351,5 @@ class CommanderHistoryManager:
                 self.aggregated_commanders()
             except Exception:
                 log.exception("Exception in CommanderHistoryManager worker loop, continuing")
-
 
 history_inst = CommanderHistoryManager()

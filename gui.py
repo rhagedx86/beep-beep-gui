@@ -36,7 +36,6 @@ class SeenCommandersGUI:
         }        
 
         
-     
     def on_history_event(self, data):
         self.add_or_update_commander(data)
         if self.window and self.window.winfo_exists():
@@ -159,7 +158,6 @@ class SeenCommandersGUI:
         self.tree.bind("<ButtonRelease-1>", enforce_column_limits)         
         enforce_column_limits(None)
         
-    
     def attach_resize_listener(self):
         if not self.window or not self.window.winfo_exists():
             return
@@ -191,7 +189,6 @@ class SeenCommandersGUI:
     def make_tree_editable(self):
         self.tree.bind("<Double-1>", self.on_tree_double_click_popup)
         self.tree.bind("<Return>", self.on_tree_enter_pressed)
-        
 
     def on_tree_enter_pressed(self, _event):
         selection = self.tree.selection()
@@ -282,14 +279,11 @@ class SeenCommandersGUI:
     
         name_entry.bind("<Return>", on_name_enter)
     
-    
         def on_combo_enter(_event):
             save_popup_changes()
             return "break"
     
         combo.bind("<Return>", on_combo_enter)
-       
-
 
     def build_ui(self, parent):
         sort_field = config.get_config("sort_field", "last_seen")
@@ -304,7 +298,6 @@ class SeenCommandersGUI:
             default_font = tkFont.nametofont("TkDefaultFont")
             row_height = default_font.metrics("linespace") + 4
             style.configure("Treeview", rowheight=row_height)
-                    
     
             self.tree = ttk.Treeview(parent, columns=("name", "sound", "last_seen"), show="headings")
             self.tree.grid(row=1, column=0, columnspan=3, sticky="nsew")
@@ -330,7 +323,6 @@ class SeenCommandersGUI:
             self.name_vars.clear()
             self.last_seen_vars.clear()
             self.tree_items = {}
-    
 
         if history_inst.seen_data:
             new_ids = [cmdr_id for cmdr_id in history_inst.seen_data if cmdr_id not in self.tree_items]
@@ -348,7 +340,6 @@ class SeenCommandersGUI:
         
         parent.grid_rowconfigure(2, weight=0)        
        
-    
     def open_options_popup(self):
         popup = tk.Toplevel(self.window)
         popup.title("Options")
@@ -366,22 +357,18 @@ class SeenCommandersGUI:
         popup.grid_rowconfigure(0, weight=1)
         popup.grid_columnconfigure(0, weight=1)
     
-    
     def on_header_click(self, field):
         if getattr(self, "sort_field", None) == field:
             self.sort_asc = not self.sort_asc
         else:
             self.sort_field = field
             self.sort_asc = field != "last_seen"
-
     
         config.set_config("sort_field", self.sort_field)
         config.set_config("sort_asc", self.sort_asc)
         config.save_config()
     
         self.sort_rows(self.sort_field, self.sort_asc)
-    
-            
     
     def add_rows(self, cmdr_ids: list[str]):
         if not hasattr(self, "tree_items"):
@@ -439,8 +426,6 @@ class SeenCommandersGUI:
             self.tree_items[cmdr_id] = item
             self.widgets[cmdr_id] = {}
 
-
-        
     def add_or_update_commander(self, data):
         if not isinstance(data, list):
             data = [data]
@@ -450,7 +435,6 @@ class SeenCommandersGUI:
         for info in data:
             cmdr_id = info["commander_id"]
             cmdr_id_str = str(cmdr_id)
-    
     
             self.name_vars.setdefault(cmdr_id_str, tk.StringVar()).set(info.get("name", "unknown"))
             self.sound_vars.setdefault(cmdr_id_str, tk.StringVar()).set(info.get("sound", sound_inst.neutral))
@@ -473,9 +457,6 @@ class SeenCommandersGUI:
             sort_asc = config.get_config("sort_asc", False)
             self.sort_rows(sort_field, sort_asc)
        
-
-    
-    
     def sort_rows(self, sort_field, sort_asc):
         if not hasattr(self, "tree") or not self.window or not self.window.winfo_exists():
             return        
@@ -505,8 +486,6 @@ class SeenCommandersGUI:
             if current_index != index:
                 self.tree.move(item_id, "", index)
     
-        
-
     def refresh_gui(self):
         if not getattr(self, "tree", None) or not self.tree.winfo_exists():
             return
@@ -586,8 +565,7 @@ class SeenCommandersGUI:
         frame = nb.Frame(parent)
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(0, weight=1)
-        
-        
+
         row = 0
 
         row = self.add_slider(
@@ -599,8 +577,7 @@ class SeenCommandersGUI:
             to=100,
             attr="volume"
         )
-        
-        
+                
         tk.Button(
             frame,
             text="Open Sounds Folder",
@@ -613,7 +590,6 @@ class SeenCommandersGUI:
             command=lambda: beep_inst.play_sound(sound_inst.neutral)
         ).grid(row=row, column=1, padx=5, sticky="e")
         
-    
         row += 1
     
         row = self.add_info_box(
@@ -700,7 +676,5 @@ class SeenCommandersGUI:
         frame.config(width=longest_px + 40)
         frame.pack_propagate(False)        
         return frame
-
-
 
 gui_inst = SeenCommandersGUI()

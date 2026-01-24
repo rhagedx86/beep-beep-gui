@@ -40,5 +40,4 @@ class BeepBeepConfig:
         with self.lock:
             self.config[attr] = value
 
-
 config = BeepBeepConfig()

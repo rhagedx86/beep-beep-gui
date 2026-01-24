@@ -20,7 +20,6 @@ class BeepBeep:
     def mute(self) -> bool:
         return config.get_config("mute", False)
 
-    
     def play_sound(self, filename: str):
         if self.mute:
             return
@@ -72,6 +71,5 @@ class BeepBeep:
             self.last_beep = now
             self.play_sound(sound_to_play)
             history_inst.save_seen_commanders()
-       
        
 beep_inst = BeepBeep()

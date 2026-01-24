@@ -6,9 +6,6 @@ from gui import gui_inst
 from logutil import log
 import myNotebook as nb  # noqa
 
-
-
-
 def plugin_start3(plugin_dir):
     log.info("beep_beep plugin starting (%s)", plugin_dir)
     history_inst.load_seen_commanders()
