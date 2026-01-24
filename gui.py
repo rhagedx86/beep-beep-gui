@@ -546,7 +546,6 @@ class SeenCommandersGUI:
     
 
     def add_slider(self, frame, row, label, var, *, attr=None, from_=0, to=100):
-        """Add a slider (Scale) that automatically updates target.attr and saves to config."""
         tk.Label(frame, text=label).grid(row=row, column=0, padx=5, pady=5, sticky="w")
         slider = tk.Scale(frame, from_=from_, to=to, orient=tk.HORIZONTAL, variable=var)
         slider.grid(row=row, column=1, padx=5, pady=5, sticky="we")
@@ -584,7 +583,6 @@ class SeenCommandersGUI:
         return row + 1
 
     def options_menu(self, parent):
-        """Opt Menu for both options button and plugin options menu"""
         frame = nb.Frame(parent)
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(0, weight=1)

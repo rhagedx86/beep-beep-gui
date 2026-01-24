@@ -25,27 +25,26 @@ class BeepBeep:
         if self.mute:
             return
 
-        dll_path = os.path.join(self.plugin_dir, "PlayAudioDS.dll")
+        dll_path = os.path.join(self.plugin_dir, "BeepBeepPlay.dll")
         sound_path = os.path.join(self.plugin_dir, "sounds", filename)
 
         if not os.path.isfile(dll_path):
-            log.info("Can not find PlayAudioDS.dll in %s", dll_path)
+            log.info("Can not find BeepBeepPlay.dll in %s", dll_path)
             return
         
         if not os.path.isfile(sound_path):
             log.info("Can not find sound in %s", sound_path)
             return
         
-
         linear = self.volume / 100.0
         vol = math.log10(1 + 9 * linear)
 
         try:
             dll = ctypes.CDLL(dll_path)
-            dll.PlayAudioDS.argtypes = [ctypes.c_char_p, ctypes.c_float]
-            dll.PlayAudioDS.restype = ctypes.c_int
+            dll.BeepBeepPlay.argtypes = [ctypes.c_char_p, ctypes.c_float]
+            dll.BeepBeepPlay.restype = ctypes.c_int
             path_bytes = sound_path.encode("utf-8")
-            dll.PlayAudioDS(path_bytes, vol)
+            dll.BeepBeepPlay(path_bytes, vol)
 
         except (OSError, AttributeError, TypeError) as e:
             log.error("Failed to play sound %s: %s", sound_path, e)

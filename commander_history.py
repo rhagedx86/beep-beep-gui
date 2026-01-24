@@ -271,10 +271,11 @@ class CommanderHistoryManager:
                         continue
     
                 
-                if is_wing and wing_recent:
+                if location.wing and is_wing and wing_recent:
                     log.info("Skipping add for %s because wing join just occurred", cmdr_id)
                     beep_this_commander = False
                     continue
+
         
                 if inst:
                     if inst.get("here", True):
@@ -305,21 +306,31 @@ class CommanderHistoryManager:
                     log.info("Added new instance for %s in current system", cmdr_id)
                     beep_this_commander = True
         
-                allow_beep = not(location.wing or is_wing) or self.wing_notify
+                
+                allow_beep = False
+                
+                if not location.wing:
+                    allow_beep = True
+                else:
+                    if is_wing:
+                        allow_beep = self.wing_notify
+                    else:
+                        allow_beep = True
+                
                 if allow_beep and beep_this_commander:
                     beeps_to_play.append(info)
-                    #log.info("Appended %s to beeps_to_play", cmdr_id)
         
             if not changed_entries:
                 return
         
-            if self._gui_listener and changed_entries:
-                self._gui_listener(changed_entries)
+
             
     
             if beeps_to_play and self._sound_listener:
                 #log.info("Calling _sound_listener for %d beeps_to_play", len(beeps_to_play))
                 self._sound_listener(beeps_to_play)
+                if self._gui_listener and changed_entries:
+                    self._gui_listener(changed_entries)                
         
             location.jump_backup = {}
             location.jump_ts = None
@@ -350,7 +361,7 @@ class CommanderHistoryManager:
         if self.worker_thread and self.worker_thread.is_alive():
             return
 
-        log.info("Starting worker!")
+        log.info("Starting Beepbeep worker!")
         self.worker_stop_event.clear()
         self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True, name="CommanderHistoryWorker")
         self.worker_thread.start()
@@ -359,7 +370,7 @@ class CommanderHistoryManager:
         self.worker_stop_event.set()
         if self.worker_thread:
             self.worker_thread.join(timeout=3)
-            log.info("CommanderHistoryManager worker stopped.")
+            log.info("Beepbeep worker stopped.")
 
     def worker_loop(self):
         while not self.worker_stop_event.is_set():

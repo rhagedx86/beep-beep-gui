@@ -54,10 +54,8 @@ class Location:
 
         
     def jump(self):
-        """Called when the commander starts a jump."""
         if self.prev_system != self.system:
             self.jump_ts = time.time()
-            # Backup current instances before clearing
             self.jump_backup = self.instance.copy()
             self.instance.clear()
             log.info(
