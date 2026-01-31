@@ -8,7 +8,7 @@ from beep_beep_config import config
 from commander_history import history_inst
 from beep_beep import beep_inst
 from sound_loader import sound_inst
-
+from logutil import log
 
 class SeenCommandersGUI:
     def __init__(self):
@@ -29,6 +29,7 @@ class SeenCommandersGUI:
         self.sort_asc = False       
         self.refresh_interval = 5000        
         self.beep_inst = None
+        self._refresh_id = None
         self.ui_cache = {
             "name": {},
             "sound": {},
@@ -113,6 +114,8 @@ class SeenCommandersGUI:
         y = config.get_config("seen_window_y", 50)
         width = config.get_config("seen_window_width", 800)
         height = config.get_config("seen_window_height", 400)
+        
+        log.info(f"open window. x{x}, y{y}, h{height}, w{width}")
     
         width = max(100, width)
         height = max(100, height)
@@ -158,6 +161,7 @@ class SeenCommandersGUI:
         self.tree.bind("<ButtonRelease-1>", enforce_column_limits)         
         enforce_column_limits(None)
         
+        
     def attach_resize_listener(self):
         if not self.window or not self.window.winfo_exists():
             return
@@ -168,23 +172,35 @@ class SeenCommandersGUI:
             if self.resize_after_id is not None:
                 self.window.after_cancel(self.resize_after_id)
     
-            self.resize_after_id = self.window.after(300, save_window_geometry)
+            self.resize_after_id = self.window.after(300, self.save_window_geometry)
     
-        def save_window_geometry():
-            width = max(100, self.window.winfo_width())
-            height = max(100, self.window.winfo_height())
-            x = self.window.winfo_x()
-            y = self.window.winfo_y()
-    
-            config.set_config("seen_window_x", x)
-            config.set_config("seen_window_y", y)
-            config.set_config("seen_window_width", width)
-            config.set_config("seen_window_height", height)
-            config.save_config()
-    
-            self.resize_after_id = None
+
     
         self.window.bind("<Configure>", on_resize)
+        
+        def on_window_close():
+            self.save_window_geometry()
+            self.window.destroy()
+    
+        self.window.protocol("WM_DELETE_WINDOW", on_window_close)        
+
+
+    def save_window_geometry(self):
+        width = max(100, self.window.winfo_width())
+        height = max(100, self.window.winfo_height())
+        x = self.window.winfo_x()
+        y = self.window.winfo_y()
+
+        config.set_config("seen_window_x", x)
+        config.set_config("seen_window_y", y)
+        config.set_config("seen_window_width", width)
+        config.set_config("seen_window_height", height)
+        config.save_config()
+        
+        log.info(f"save window. x{x}, y{y}, h{height}, w{width}")
+
+        self.resize_after_id = None
+
 
     def make_tree_editable(self):
         self.tree.bind("<Double-1>", self.on_tree_double_click_popup)
@@ -347,7 +363,7 @@ class SeenCommandersGUI:
         popup.grab_set()
     
         popup.geometry(
-            f"+{self.window.winfo_rootx() + 50}+{self.window.winfo_rooty() + 50}"
+            f"+{self.window.winfo_rootx() + 0}+{self.window.winfo_rooty() + 50}"
         )
     
         options_frame = self.options_menu(popup)
@@ -502,6 +518,8 @@ class SeenCommandersGUI:
             self.refresh_gui()
             if self.window and self.window.winfo_exists():
                 self.window.after(self.refresh_interval, refresh)
+            self._refresh_id = self.window.after(self.refresh_interval, refresh)
+                
         refresh()
         
     def open_sounds_folder(self):
@@ -554,10 +572,14 @@ class SeenCommandersGUI:
         label = tk.Label(
             info_frame,
             text=text,
-            justify="left",
-            wraplength=330
+            justify="left"
         )
         label.pack(padx=10, pady=6, fill="x")
+        
+        def update_wrap(event):
+            label.config(wraplength=event.width - 20)  # minus padding
+    
+        info_frame.bind("<Configure>", update_wrap)        
     
         return row + 1
 
@@ -596,14 +618,38 @@ class SeenCommandersGUI:
             frame,
             row,
             (
-                "To add sounds, place them in the 'sounds' folder inside the plugin.\n"
-                "Only WAV and MP3 files are supported.\n"
-                "The default files 'foe', 'friend', and 'neutral' must exist.\n"
-                "On plugin startup, the newest file with each name will be loaded.\n"
-                "Restart EDMC to load newly added sounds."
+                "To add sounds, place them in the 'sounds' folder inside the plugin. "
+                "Only WAV and MP3 files are supported. "
+                "The default files 'foe', 'friend', and 'neutral' must exist. "
+                "On plugin startup, the newest file with each name will be loaded. "
+                "Restart EDMC to load newly added sounds. "
             ),
             title="Sound Files"
         )
+        
+        
+        row = self.add_slider(
+            frame,
+            row,
+            "Multiple sounds",
+            tk.IntVar(value=config.get_config("sounds", 1)),
+            from_=1,
+            to=10,
+            attr="sounds"
+        )        
+        
+            
+        row = self.add_info_box(
+            frame,
+            row,
+            (
+                "If there are multiple CMDRS, it will play each one with a 200 ms delay."
+            ),
+            title="Multiple sounds"
+        )
+        
+        row += 1
+        
         
         row = self.add_checkbox(
             frame,
@@ -617,7 +663,7 @@ class SeenCommandersGUI:
             frame,
             row,
             (
-                "When enabled, if a CMDR or yourself leaves your instance, a sound will play.\n"
+                "When enabled, if a CMDR or yourself leaves your instance, a sound will play. "
                 "For example, if you are in Supercruise and someone leaves, the sound will play."
             ),
             title="Beep on leaving"
@@ -635,7 +681,7 @@ class SeenCommandersGUI:
             frame,
             row,
             (
-                "When disabled, no sounds will play for wing members.\n"
+                "When disabled, no sounds will play for wing members. "
                 "This setting only affects wing-related alerts."
             ),
             title="Wing Notify"
@@ -645,36 +691,34 @@ class SeenCommandersGUI:
             frame,
             row,
             (
-                "If EDMC is started while the game is already running, commanders who are\n"
-                "already in your instance may trigger sounds in reverse — for example,\n"
-                "alerts may play when they leave instead of when they arrive.\n\n"
-                "Going to any EMPTY instance (Normal Space, Supercruise, or Hyperspace) and\n"
-                "waiting ~5 seconds, or simply , will reset this.\n\n"
-                "While this system is not perfect it will work in most cases.\n"
-                "With only a couple sound events not happening when they should."
+                "If EDMC is started while the game is already running, commanders who are"
+                "already in your instance may trigger sounds in reverse — for example, "
+                "alerts may play when they leave instead of when they arrive. \n\n"
+                "Going to any EMPTY instance (Normal Space, Supercruise, or Hyperspace) and "
+                "waiting ~5 seconds, or simply , will reset this."
             ),
             title="General Notes"
         )
         
-        font = tkFont.nametofont("TkDefaultFont")
-        longest_px = 0
-    
-        def find_longest_line(widget):
-            nonlocal longest_px
-            for child in widget.winfo_children():
-                
-                if isinstance(child, tk.Label):
-                    
-                    for line in child.cget("text").split("\n"):
-                        longest_px = max(longest_px, font.measure(line)
-                                         )
-                if isinstance(child, (tk.Frame, tk.LabelFrame)):
-                    find_longest_line(child)
-    
-        find_longest_line(frame)
-    
-        frame.config(width=longest_px + 40)
-        frame.pack_propagate(False)        
+        # font = tkFont.nametofont("TkDefaultFont")
+        # longest_px = 0
+        #
+        # def find_longest_line(widget):
+        #     nonlocal longest_px
+        #     for child in widget.winfo_children():
+        #
+        #         if isinstance(child, tk.Label):
+        #
+        #             for line in child.cget("text").split("\n"):
+        #                 longest_px = max(longest_px, font.measure(line)
+        #                                  )
+        #         if isinstance(child, (tk.Frame, tk.LabelFrame)):
+        #             find_longest_line(child)
+        #
+        # find_longest_line(frame)
+        #
+        # frame.config(width=longest_px + 40)
+        frame.pack_propagate(True)        
         return frame
 
 gui_inst = SeenCommandersGUI()

@@ -2,6 +2,7 @@ import datetime
 import math
 import os
 import ctypes
+import threading
 from logutil import log
 from beep_beep_config import config
 from commander_history import history_inst
@@ -19,6 +20,10 @@ class BeepBeep:
     @property
     def mute(self) -> bool:
         return config.get_config("mute", False)
+    
+    @property
+    def sounds(self) -> int:
+        return config.get_config("sounds", 1)
 
     def play_sound(self, filename: str):
         if self.mute:
@@ -35,8 +40,8 @@ class BeepBeep:
             log.info("Can not find sound in %s", sound_path)
             return
         
-        linear = self.volume / 100.0
-        vol = math.log10(1 + 9 * linear)
+        vol = self.volume / 100.0
+        
 
         try:
             dll = ctypes.CDLL(dll_path)
@@ -48,9 +53,43 @@ class BeepBeep:
         except (OSError, AttributeError, TypeError) as e:
             log.error("Failed to play sound %s: %s", sound_path, e)
     
+    
+    
+    #
+    #
+    #
+    # def handle_event(self, info: dict | list[dict]):
+    #     if not isinstance(info, list):
+    #         info = [info]
+    #
+    #     now = datetime.datetime.utcnow()
+    #     possible_sounds: list[str] = []
+    #
+    #
+    #     for entry in info:
+    #         cmdr_id = entry["commander_id"]
+    #         existing = history_inst.seen_data.get(cmdr_id, {})
+    #
+    #         selected = existing.get("sound", sound_inst.neutral)
+    #         if selected in ("none.wav", "none"):
+    #             continue
+    #
+    #         possible_sounds.append(selected)
+    #         history_inst.seen_data[cmdr_id] = existing
+    #
+    #     if possible_sounds:
+    #         sound_to_play = next((s for s in possible_sounds if s != sound_inst.neutral), possible_sounds[0])
+    #         self.last_beep = now
+    #         self.play_sound(sound_to_play)
+    #         history_inst.save_seen_commanders()
+    
+        
     def handle_event(self, info: dict | list[dict]):
         if not isinstance(info, list):
             info = [info]
+    
+        if not self.sounds:
+            return
     
         now = datetime.datetime.utcnow()
         possible_sounds: list[str] = []
@@ -58,7 +97,6 @@ class BeepBeep:
         for entry in info:
             cmdr_id = entry["commander_id"]
             existing = history_inst.seen_data.get(cmdr_id, {})
-    
             selected = existing.get("sound", sound_inst.neutral)
             if selected in ("none.wav", "none"):
                 continue
@@ -67,9 +105,16 @@ class BeepBeep:
             history_inst.seen_data[cmdr_id] = existing
     
         if possible_sounds:
-            sound_to_play = next((s for s in possible_sounds if s != sound_inst.neutral), possible_sounds[0])
             self.last_beep = now
-            self.play_sound(sound_to_play)
             history_inst.save_seen_commanders()
-       
+            self._schedule_sounds(possible_sounds)
+        
+    def _schedule_sounds(self, sounds: list[str]):
+        max_sounds = self.sounds
+        for i, sound_file in enumerate(sounds[:max_sounds]):
+            threading.Timer(
+                i * 0.2,
+                lambda s=sound_file: self.play_sound(s)
+            ).start()
+           
 beep_inst = BeepBeep()

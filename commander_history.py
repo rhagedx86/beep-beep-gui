@@ -249,9 +249,10 @@ class CommanderHistoryManager:
                         )
                         continue
     
-                if location.wing and is_wing and wing_recent:
+                if is_wing and wing_recent:
                     log.info("Skipping add for %s because wing join just occurred", cmdr_id)
                     beep_this_commander = False
+
                     continue
 
                 if inst:

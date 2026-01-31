@@ -1,6 +1,8 @@
 import os
 import json
 import threading
+from logutil import log
+
 
 class BeepBeepConfig:
     def __init__(self):
@@ -26,7 +28,7 @@ class BeepBeepConfig:
         path = os.path.join(self.plugin_dir, self.config_file)
         try:
             with self.lock:
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, "w", encoding="utf-8") as f:
                     json.dump(self.config, f, indent=2)
                     
         except (OSError, json.JSONDecodeError):
