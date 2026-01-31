@@ -56,7 +56,6 @@ def journal_entry(cmdrname: str, is_beta: bool, system: str, station: str, entry
 def plugin_prefs(parent: "nb.Notebook", cmdr: str, is_beta: bool) -> Optional["nb.Frame"]:
     return gui_inst.options_menu(parent)
 
-
 def plugin_stop():
     history_inst.stop_worker()
     log.info("beep_beep plugin stopped!")

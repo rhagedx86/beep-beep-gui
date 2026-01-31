@@ -8,7 +8,6 @@ from beep_beep_config import config
 from commander_history import history_inst
 from beep_beep import beep_inst
 from sound_loader import sound_inst
-from logutil import log
 
 class SeenCommandersGUI:
     def __init__(self):
@@ -114,8 +113,6 @@ class SeenCommandersGUI:
         y = config.get_config("seen_window_y", 50)
         width = config.get_config("seen_window_width", 800)
         height = config.get_config("seen_window_height", 400)
-        
-        log.info(f"open window. x{x}, y{y}, h{height}, w{width}")
     
         width = max(100, width)
         height = max(100, height)
@@ -196,8 +193,6 @@ class SeenCommandersGUI:
         config.set_config("seen_window_width", width)
         config.set_config("seen_window_height", height)
         config.save_config()
-        
-        log.info(f"save window. x{x}, y{y}, h{height}, w{width}")
 
         self.resize_after_id = None
 

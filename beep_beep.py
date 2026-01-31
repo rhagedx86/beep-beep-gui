@@ -1,5 +1,4 @@
 import datetime
-import math
 import os
 import ctypes
 import threading
@@ -52,36 +51,6 @@ class BeepBeep:
 
         except (OSError, AttributeError, TypeError) as e:
             log.error("Failed to play sound %s: %s", sound_path, e)
-    
-    
-    
-    #
-    #
-    #
-    # def handle_event(self, info: dict | list[dict]):
-    #     if not isinstance(info, list):
-    #         info = [info]
-    #
-    #     now = datetime.datetime.utcnow()
-    #     possible_sounds: list[str] = []
-    #
-    #
-    #     for entry in info:
-    #         cmdr_id = entry["commander_id"]
-    #         existing = history_inst.seen_data.get(cmdr_id, {})
-    #
-    #         selected = existing.get("sound", sound_inst.neutral)
-    #         if selected in ("none.wav", "none"):
-    #             continue
-    #
-    #         possible_sounds.append(selected)
-    #         history_inst.seen_data[cmdr_id] = existing
-    #
-    #     if possible_sounds:
-    #         sound_to_play = next((s for s in possible_sounds if s != sound_inst.neutral), possible_sounds[0])
-    #         self.last_beep = now
-    #         self.play_sound(sound_to_play)
-    #         history_inst.save_seen_commanders()
     
         
     def handle_event(self, info: dict | list[dict]):

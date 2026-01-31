@@ -1,8 +1,6 @@
 import os
 import json
 import threading
-from logutil import log
-
 
 class BeepBeepConfig:
     def __init__(self):

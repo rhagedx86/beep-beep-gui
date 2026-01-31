@@ -22,7 +22,6 @@ class SoundLoader:
 
         final_sounds = []
 
-
         for core in ["neutral", "friend", "foe"]:
             candidates = [f for f in all_files if f.lower().startswith(core + ".")]
             if candidates:
@@ -38,9 +37,7 @@ class SoundLoader:
 
         
         final_sounds.extend(all_files)
-
         final_sounds.append("none")
-
         self.sound_files = final_sounds
   
 

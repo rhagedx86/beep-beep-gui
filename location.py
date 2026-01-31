@@ -25,7 +25,6 @@ class Location:
         self.prev_state = self.state
         self.state = state
         self.system = system
-        log.info(f"New location: here={self.state}, system={self.system}")
 
     def get(self):
         return self.state, self.system
@@ -47,27 +46,18 @@ class Location:
             "system": system,
             "here": here
         }
-    
-        log.info(
-            f"Added/Updated instance: id={id_}, state={state}, system={system}, here={here}"
-        )
-
-        
+         
     def jump(self):
         if self.prev_system != self.system:
             self.jump_ts = time.time()
             self.jump_backup = self.instance.copy()
             self.instance.clear()
-            log.info(
-                f"Jump started at {self.jump_ts}, instances backed up: {len(self.jump_backup)}, current instances cleared"
-            )        
+            
         else:
             self.jump_ts = None
             self.jump_backup = {}
             
-            
     def wing_changed(self): 
         self.wing_join = time.time()
         
-
 location = Location()

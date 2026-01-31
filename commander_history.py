@@ -9,7 +9,6 @@ from logutil import log
 from beep_beep_config import config
 from location import location
 
-
 class CommanderEntry(TypedDict):
     commander_id: str
     name: str
@@ -190,7 +189,6 @@ class CommanderHistoryManager:
         
                 self.seen_data[cmdr_id] = info
              
-            log.info("Saving seen commanders")
             self.save_seen_commanders()
     
     def aggregated_commanders(self):
@@ -206,9 +204,6 @@ class CommanderHistoryManager:
             now_ts = time.time()
             jump_recent = location.jump_ts and (now_ts - location.jump_ts <= 60)
             wing_recent = location.wing_join and (now_ts - location.wing_join <= 60)
-            
-            log.debug(f"Jump recent: {jump_recent}, jump_ts={location.jump_ts}, now={now_ts}")
-            log.debug(f"Wing recent: {wing_recent}, wing_ts={location.wing_join}, now={now_ts}")
         
             for entry in entries:
                 
@@ -243,22 +238,15 @@ class CommanderHistoryManager:
                 if jump_recent and cmdr_id in location.jump_backup:
                     prev = location.jump_backup[cmdr_id]
                     if prev.get("here", False):
-                        log.info(
-                            "Skipping add for %s because jump just occurred and they were still here in old system",
-                            cmdr_id
-                        )
                         continue
     
                 if is_wing and wing_recent:
-                    log.info("Skipping add for %s because wing join just occurred", cmdr_id)
                     beep_this_commander = False
-
                     continue
 
                 if inst:
                     if inst.get("here", True):
                         inst["here"] = False
-                        log.info("Marked %s here=False (left system)", cmdr_id)
                         beep_this_commander = bool(self.beep_on_leave)
 
                     else:
@@ -266,22 +254,19 @@ class CommanderHistoryManager:
                             inst["system"] = location.system
                             inst["state"] = location.state
                             inst["here"] = True
-                            log.info(
-                                "Updated %s to new system/state (%s, %s) and marked here=True",
-                                cmdr_id, location.system, location.state
-                            )
                             beep_this_commander = True
+                            
                         elif inst.get("here") is False:
                             inst["here"] = True
                             log.info("Marked %s here=True (returned)", cmdr_id)
                             beep_this_commander = True
+                            
                         else:
                             beep_this_commander = False
                 else:
                     location.add_instance(cmdr_id, state=location.state, system=location.system)
                     inst = location.get_instance()[cmdr_id]
                     inst["here"] = True
-                    log.info("Added new instance for %s in current system", cmdr_id)
                     beep_this_commander = True
         
                 allow_beep = False
@@ -301,7 +286,6 @@ class CommanderHistoryManager:
                 return
         
             if beeps_to_play and self._sound_listener:
-                #log.info("Calling _sound_listener for %d beeps_to_play", len(beeps_to_play))
                 self._sound_listener(beeps_to_play)
                 if self._gui_listener and changed_entries:
                     self._gui_listener(changed_entries)                
