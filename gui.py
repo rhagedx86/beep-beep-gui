@@ -37,9 +37,18 @@ class SeenCommandersGUI:
 
         
     def on_history_event(self, data):
+        if not self.window or not self.window.winfo_exists():
+            return
+    
+        self.window.after(
+            0,
+            lambda: self._handle_history_event(data)
+        )
+    
+    
+    def _handle_history_event(self, data):
         self.add_or_update_commander(data)
-        if self.window and self.window.winfo_exists():
-            self.refresh_gui()
+        self.refresh_gui()
 
 
     def format_time_ago(self, ts_iso: str) -> str:
@@ -165,12 +174,21 @@ class SeenCommandersGUI:
     
         self.resize_after_id = None 
     
-        def on_resize(_event):
-            if self.resize_after_id is not None:
-                self.window.after_cancel(self.resize_after_id)
-    
-            self.resize_after_id = self.window.after(300, self.save_window_geometry)
-    
+        def on_resize(_event):    
+            if not self.window or not self.window.winfo_exists():
+                return
+        
+            if self.resize_after_id:
+                try:
+                    self.window.after_cancel(self.resize_after_id)
+                except Exception:
+                    pass
+        
+            self.resize_after_id = self.window.after(
+                300,
+                self.save_window_geometry
+            )
+
 
     
         self.window.bind("<Configure>", on_resize)
@@ -498,24 +516,43 @@ class SeenCommandersGUI:
                 self.tree.move(item_id, "", index)
     
     def refresh_gui(self):
-        if not getattr(self, "tree", None) or not self.tree.winfo_exists():
+        if not self.tree or not self.tree.winfo_exists():
             return
     
         for cmdr_id, data in history_inst.seen_data.items():
             item_id = self.tree_items.get(cmdr_id)
-            new_time = self.format_time_ago(data["last_seen"])
     
-            if item_id:
+            if not item_id:
+                continue
+    
+            try:
+                new_time = self.format_time_ago(data["last_seen"])
                 self.tree.set(item_id, "last_seen", new_time)
+            except Exception:
+                pass
+
 
     def start_auto_refresh(self):
+    
+        if self._refresh_id:
+            try:
+                self.window.after_cancel(self._refresh_id)
+            except Exception:
+                pass
+    
         def refresh():
+            if not self.window or not self.window.winfo_exists():
+                return
+    
             self.refresh_gui()
-            if self.window and self.window.winfo_exists():
-                self.window.after(self.refresh_interval, refresh)
-            self._refresh_id = self.window.after(self.refresh_interval, refresh)
-                
+    
+            self._refresh_id = self.window.after(
+                self.refresh_interval,
+                refresh
+            )
+    
         refresh()
+
         
     def open_sounds_folder(self):
         folder = os.path.join(self.plugin_dir, "sounds")
