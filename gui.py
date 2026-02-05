@@ -695,24 +695,6 @@ class SeenCommandersGUI:
             title="General Notes"
         )
         
-        # font = tkFont.nametofont("TkDefaultFont")
-        # longest_px = 0
-        #
-        # def find_longest_line(widget):
-        #     nonlocal longest_px
-        #     for child in widget.winfo_children():
-        #
-        #         if isinstance(child, tk.Label):
-        #
-        #             for line in child.cget("text").split("\n"):
-        #                 longest_px = max(longest_px, font.measure(line)
-        #                                  )
-        #         if isinstance(child, (tk.Frame, tk.LabelFrame)):
-        #             find_longest_line(child)
-        #
-        # find_longest_line(frame)
-        #
-        # frame.config(width=longest_px + 40)
         frame.pack_propagate(True)        
         return frame
 

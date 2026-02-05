@@ -87,3 +87,4 @@ class BeepBeep:
             ).start()
            
 beep_inst = BeepBeep()
+

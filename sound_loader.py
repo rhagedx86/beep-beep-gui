@@ -40,5 +40,4 @@ class SoundLoader:
         final_sounds.append("none")
         self.sound_files = final_sounds
   
-
 sound_inst = SoundLoader()

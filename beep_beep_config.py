@@ -41,3 +41,4 @@ class BeepBeepConfig:
             self.config[attr] = value
 
 config = BeepBeepConfig()
+

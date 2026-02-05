@@ -31,8 +31,7 @@ class Location:
 
     def get_instance(self):
         return self.instance
-
-
+    
     def add_instance(self, id_, state=None, system=None):
         if state is None:
             state = -1

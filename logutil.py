@@ -4,7 +4,6 @@ import os
 import inspect
 from config import appname # noqa
 
-
 class Log:
     def __init__(self, debug=False):
         self.beep_logger = None

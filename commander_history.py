@@ -346,3 +346,4 @@ class CommanderHistoryManager:
                 log.exception("Exception in CommanderHistoryManager worker loop, continuing")
 
 history_inst = CommanderHistoryManager()
+
