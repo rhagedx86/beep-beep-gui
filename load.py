@@ -21,6 +21,7 @@ def plugin_app(parent):
     return parent
 
 
+
 def journal_entry(cmdrname: str, is_beta: bool, system: str, station: str, entry: dict, state: dict) -> None:
     event = entry.get("event")
     system = entry.get("StarSystem", system)
@@ -51,7 +52,6 @@ def journal_entry(cmdrname: str, is_beta: bool, system: str, station: str, entry
         location.set_wing(False)
         location.wing_changed()
     
-    log.info("Event: %s", event)
 
 def plugin_prefs(parent: "nb.Notebook", cmdr: str, is_beta: bool) -> Optional["nb.Frame"]:
     return gui_inst.options_menu(parent)

@@ -152,7 +152,6 @@ class CommanderHistoryManager:
         if not self.changed:
             return None
     
-        log.info("New entries!")
         if self._trigger:
             self.data_received = True
     
@@ -191,110 +190,119 @@ class CommanderHistoryManager:
              
             self.save_seen_commanders()
     
+
+
     def aggregated_commanders(self):
         data = self.aggregate_most_recent_commanders(False)
-        if data:
     
-            entries = data.get("Interactions", [])
-            frontier_epoch = datetime.datetime(1601, 1, 1)
-        
-            beeps_to_play = []
-            changed_entries: list[CommanderEntry] = []
-        
-            now_ts = time.time()
-            jump_recent = location.jump_ts and (now_ts - location.jump_ts <= 60)
-            wing_recent = location.wing_join and (now_ts - location.wing_join <= 60)
-        
-            for entry in entries:
-                
-                interactions = entry.get("Interactions", [])
-                if "Met" not in interactions:
-                    continue
-        
-                cmdr_id = str(entry["CommanderID"])
-                ts = frontier_epoch + datetime.timedelta(seconds=entry["Epoch"])
+        if not data:
+            return
     
-                existing = self.seen_data.get(cmdr_id)
-                if existing:
-                    last_seen_existing = datetime.datetime.fromisoformat(existing["last_seen"])
-                    if ts <= last_seen_existing:
-                        continue
-        
-                is_wing = "WingMember" in interactions
-                
-                info: CommanderEntry = {
-                    "commander_id": cmdr_id,
-                    "name": existing.get("name", "unknown") if existing else "unknown",
-                    "sound": existing.get("sound", "neutral.wav") if existing else "neutral.wav",
-                    "last_seen": ts.isoformat(),
-                }
-        
-                self.seen_data[cmdr_id] = info
-                changed_entries.append(info)
-        
-                inst = location.get_instance().get(cmdr_id)
-        
-                beep_this_commander = True
-                if jump_recent and cmdr_id in location.jump_backup:
-                    prev = location.jump_backup[cmdr_id]
-                    if prev.get("here", False):
-                        continue
+        entries = data.get("Interactions", [])
     
-                if is_wing and wing_recent:
-                    beep_this_commander = False
-                    continue
+        frontier_epoch = datetime.datetime(1601, 1, 1)
+    
+        beeps_to_play = []
+        changed_entries: list[CommanderEntry] = []
+    
+        now_ts = time.time()
+        jump_recent = location.jump_ts and (now_ts - location.jump_ts <= 60)
+        wing_recent = location.wing_join and (now_ts - location.wing_join <= 60)
 
-                if inst:
-                    if inst.get("here", True):
-                        inst["here"] = False
-                        beep_this_commander = bool(self.beep_on_leave)
+        for entry in entries:
+            interactions = entry.get("Interactions", [])
+    
+            if "Met" not in interactions:
+                continue
+    
+            cmdr_id = str(entry["CommanderID"])
+            ts = frontier_epoch + datetime.timedelta(seconds=entry["Epoch"])
+    
+            existing = self.seen_data.get(cmdr_id)
+            if existing:
+                last_seen_existing = datetime.datetime.fromisoformat(existing["last_seen"])
+                if ts <= last_seen_existing:
+                    continue
+    
+            is_wing = "WingMember" in interactions
+    
+            info: CommanderEntry = {
+                "commander_id": cmdr_id,
+                "name": existing.get("name", "unknown") if existing else "unknown",
+                "sound": existing.get("sound", "neutral.wav") if existing else "neutral.wav",
+                "last_seen": ts.isoformat(),
+            }
+    
+            self.seen_data[cmdr_id] = info
+            changed_entries.append(info)
+    
+            inst = location.get_instance().get(cmdr_id)
+            beep_this_commander = True
+    
 
-                    else:
-                        if inst["system"] != location.system or inst["state"] != location.state:
-                            inst["system"] = location.system
-                            inst["state"] = location.state
-                            inst["here"] = True
-                            beep_this_commander = True
-                            
-                        elif inst.get("here") is False:
-                            inst["here"] = True
-                            log.info("Marked %s here=True (returned)", cmdr_id)
-                            beep_this_commander = True
-                            
-                        else:
-                            beep_this_commander = False
-                else:
-                    location.add_instance(cmdr_id, state=location.state, system=location.system)
-                    inst = location.get_instance()[cmdr_id]
+            if jump_recent and cmdr_id in location.jump_backup:
+                prev = location.jump_backup[cmdr_id]
+                if prev.get("here", False):
+                    continue
+    
+            if is_wing and wing_recent:
+                beep_this_commander = False
+                continue
+    
+            if inst:    
+                if inst["system"] != location.system or inst["state"] != location.state:
+                    inst["system"] = location.system
+                    inst["state"] = location.state
                     inst["here"] = True
                     beep_this_commander = True
-        
-                allow_beep = False
+
+                elif inst.get("here", True):
+                    inst["here"] = False
+                    beep_this_commander = bool(self.beep_on_leave)
                 
-                if not location.wing:
-                    allow_beep = True
+                elif inst.get("here") is False:
+                    inst["here"] = True
+                    beep_this_commander = True
+                
                 else:
-                    if is_wing:
-                        allow_beep = self.wing_notify
-                    else:
-                        allow_beep = True
-                
-                if allow_beep and beep_this_commander:
-                    beeps_to_play.append(info)
-        
-            if not changed_entries:
-                return
-        
-            if beeps_to_play and self._sound_listener:
-                self._sound_listener(beeps_to_play)
-                if self._gui_listener and changed_entries:
-                    self._gui_listener(changed_entries)                
-        
-            location.jump_backup = {}
-            location.jump_ts = None
-            location.wing_join = None
-        
-            self.save_seen_commanders()
+                    beep_this_commander = False
+
+            else:
+                location.add_instance(cmdr_id, state=location.state, system=location.system)
+                inst = location.get_instance()[cmdr_id]
+                inst["here"] = True
+                beep_this_commander = True
+    
+            if not location.wing:
+                allow_beep = True
+            else:
+                if is_wing:
+                    allow_beep = self.wing_notify
+                else:
+                    allow_beep = True
+    
+            if allow_beep and beep_this_commander:
+                beeps_to_play.append(info)
+            
+    
+        if not changed_entries:
+            return
+    
+        if beeps_to_play and self._sound_listener:
+            self._sound_listener(beeps_to_play)
+    
+        if self._gui_listener and changed_entries:
+            self._gui_listener(changed_entries)
+    
+        location.jump_backup = {}
+        location.jump_ts = None
+        location.wing_join = None
+    
+        self.save_seen_commanders()
+
+
+      
+      
       
     def trigger(self):
         with self._lock:
