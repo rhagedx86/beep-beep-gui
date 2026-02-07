@@ -703,38 +703,32 @@ class SeenCommandersGUI:
     
         return row + 1
 
-   
-
-
-
     def options_menu(self, parent):
-        canvas = tk.Canvas(parent)
-        scrollbar = tk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        # Use parent directly
+        frame_container = parent  # this is the nb.Frame passed from plugin_prefs
+        frame_container.grid_rowconfigure(0, weight=1)
+        frame_container.grid_columnconfigure(0, weight=1)
+    
+        canvas = tk.Canvas(frame_container)
+        scrollbar = tk.Scrollbar(frame_container, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
     
         canvas.grid(row=0, column=0, sticky="nsew")
         scrollbar.grid(row=0, column=1, sticky="ns")
     
-        parent.grid_rowconfigure(0, weight=1)
-        parent.grid_columnconfigure(0, weight=1)
-    
         frame = tk.Frame(canvas)
         frame.columnconfigure(0, weight=1)
-    
-        canvas_window = canvas.create_window((0, 0), window=frame, anchor="nw")
+        canvas_window = canvas.create_window((0,0), window=frame, anchor="nw")
     
         def on_canvas_configure(event):
             canvas.itemconfigure(canvas_window, width=event.width)
-    
         canvas.bind("<Configure>", on_canvas_configure)
     
         def on_frame_configure(event):
             canvas.configure(scrollregion=canvas.bbox("all"))
         frame.bind("<Configure>", on_frame_configure)
-    
-        def on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas.bind_all("<MouseWheel>", on_mousewheel)
+
+
 
         row = 0
     
@@ -866,7 +860,8 @@ class SeenCommandersGUI:
             title="General Notes"
         )
 
-        return canvas
+        return frame_container
+
     
     
 gui_inst = SeenCommandersGUI()

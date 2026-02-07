@@ -4,6 +4,7 @@ from beep_beep import beep_inst
 from location import location
 from gui import gui_inst
 from logutil import log
+import tkinter as tk
 import myNotebook as nb  # noqa
 
 def plugin_start3(plugin_dir):
@@ -59,9 +60,11 @@ def journal_entry(cmdrname: str, is_beta: bool, system: str, station: str, entry
         victim = entry.get("Victim")        
         location.pvp_kill(victim)        
         
-        
-def plugin_prefs(parent: "nb.Notebook", cmdr: str, is_beta: bool) -> Optional["nb.Frame"]:
-    return gui_inst.options_menu(parent)
+
+def plugin_prefs(parent, cmdr, is_beta):
+    frame_container = nb.Frame(parent)
+    gui_inst.options_menu(frame_container)
+    return frame_container
 
 def plugin_stop():
     history_inst.stop_worker()
