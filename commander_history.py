@@ -267,71 +267,36 @@ class CommanderHistoryManager:
     
             inst = location.get_instance().get(cmdr_id)
     
-            beep_this_commander = True
-            
-            
-            log.info(
-                "cmdr %s detected: wing=%s existing_instance=%s",
-                cmdr_id,
-                is_wing,
-                bool(inst)
-            )
-    
-            # Jump suppression
+            beep_this_commander = True            
+
             if jump_recent and cmdr_id in location.jump_backup:
                 prev = location.jump_backup[cmdr_id]
                 if prev.get("here", False):
-                    log.info(
-                        "cmdr %s suppressed: recent jump and was already here before jump",
-                        cmdr_id
-                    )
                     continue
     
-            # Wing join suppression
             if is_wing and wing_recent:
-                log.info(
-                    "cmdr %s suppressed: recent wing join",
-                    cmdr_id
-                )
                 beep_this_commander = False
                 continue
-         
 
             if inst:
                 if interdiction_recent:
                     inst["here"] = False
                     beep_this_commander = False
-                    log.info(
-                        "cmdr %s beep suppressed due to recent interdiction → here flag cleared, will beep next time",
-                        cmdr_id
-                    )
-                
                 
                 if pvp_kill_recent:
-                    # Always do PvP suppression
                     inst["here"] = True
                     beep_this_commander = False
-                
-                    log.info(
-                        "PVP kill suppression active: cmdr_id=%s victim_name=%s",
-                        cmdr_id,
-                        location.pvp_kill_victim
-                    )
-                
-                    # Optional second log if Killed flag just appeared
+                       
                     if killed_now:
-                        log.info(
-                            "Killed flag transition detected: cmdr_id=%s victim_name=%s",
-                            cmdr_id,
-                            location.pvp_kill_victim
-                        )
                         if info["name"] == "unknown":
                             info["name"] = location.pvp_kill_victim.lower().capitalize()
+                            
+                        if cmdr_id in self.last_interactions:
+                            self.last_interactions[cmdr_id].discard("Killed")                        
                 
-                    # Update cache to avoid false future transitions
                     self.last_interactions[cmdr_id] = current_flags
-                
-                    # Skip the rest of processing for this commander
+                    self.seen_data[cmdr_id] = info
+                    changed_entries.append(info)
                     continue
 
                                 
@@ -342,11 +307,10 @@ class CommanderHistoryManager:
                     # Seen again → reset flag so next detection will beep
                     inst["here"] = False
                     beep_this_commander = False
-                    log.info("cmdr %s already marked as here → resetting here flag (will beep next time)", cmdr_id)
                 else:
                     inst["here"] = True
                     beep_this_commander = True
-                    log.info("cmdr %s detected/rejoined → BEEP", cmdr_id)
+                    
             
                 inst["state"] = location.state
                 inst["system"] = location.system
@@ -364,12 +328,7 @@ class CommanderHistoryManager:
                 inst["here"] = True
                 beep_this_commander = True
     
-                log.info(
-                    "cmdr %s first time seen in instance → BEEP",
-                    cmdr_id
-                )
     
-            # Wing notification rules
             if not location.wing:
                 allow_beep = True
             else:
@@ -377,25 +336,10 @@ class CommanderHistoryManager:
                     allow_beep = self.wing_notify
                 else:
                     allow_beep = True
-                    
-                    
-                    
-            log.info(
-                "cmdr %s beep decision: allow_beep=%s beep_this_commander=%s final=%s",
-                cmdr_id,
-                allow_beep,
-                beep_this_commander,
-                allow_beep and beep_this_commander
-            )
+                  
     
             if allow_beep and beep_this_commander and interdiction_recent == False:
                 beeps_to_play.append(info)
-                log.info(
-                    "cmdr %s queued for sound playback (%s)",
-                    cmdr_id,
-                    info["sound"]
-                )
-                
    
             self.seen_data[cmdr_id] = info
             changed_entries.append(info)
@@ -403,21 +347,12 @@ class CommanderHistoryManager:
             self.last_interactions[cmdr_id] = current_flags
     
         if not changed_entries:
-            log.info("aggregated_commanders: no changed entries")
             return
     
         if beeps_to_play and self._sound_listener:
-            log.info(
-                "aggregated_commanders: playing %d beep(s)",
-                len(beeps_to_play)
-            )
             self._sound_listener(beeps_to_play)
     
         if self._gui_listener and changed_entries:
-            log.info(
-                "aggregated_commanders: updating GUI with %d entries",
-                len(changed_entries)
-            )
             self._gui_listener(changed_entries)
     
     
@@ -434,8 +369,6 @@ class CommanderHistoryManager:
 
 
         self.save_seen_commanders()
-    
-        log.info("aggregated_commanders: end")
 
       
     def trigger(self):
