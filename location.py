@@ -1,5 +1,4 @@
 import time
-from logutil import log
 
 class Location:
     def __init__(self):
@@ -11,21 +10,31 @@ class Location:
         self.wing = False
         self.jump_ts = None
         self.wing_join = None
+        self.interdiction_ts = None
+        self.interdiction_complete = False
         self.jump_backup = {}
-
+        self.pvp_kill_ts = None
+        self.pvp_kill_victim = None
 
     def set_wing(self, in_wing: bool):
         self.wing = in_wing
 
-    def set(self, state, system):
-        if state == -1 and system != self.system:
-            self.instance = {}
+    def set(self, state=None, system=None, event=None):
+        if event == "SupercruiseExit" and self.interdiction_ts is not None:
+            now_ts = time.time()
+
+            if now_ts - self.interdiction_ts > 120:
+                self.interdiction_ts = None
+
+            
+        if state != self.state and system != self.system:
+            self.instance = {} 
             
         self.prev_system = self.system
         self.prev_state = self.state
         self.state = state
         self.system = system
-
+        
     def get(self):
         return self.state, self.system
 
@@ -58,5 +67,13 @@ class Location:
             
     def wing_changed(self): 
         self.wing_join = time.time()
+        
+    def interdiction(self):
+        self.interdiction_ts = time.time()
+        
+    def pvp_kill(self, victim):
+        self.pvp_kill_ts = time.time()
+        self.pvp_kill_victim = victim
+        
         
 location = Location()

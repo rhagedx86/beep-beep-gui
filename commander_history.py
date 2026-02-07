@@ -37,6 +37,8 @@ class CommanderHistoryManager:
         self._trigger = False
         self._reset_timer: threading.Timer | None = None
         self._lock = threading.Lock()    
+        self.last_interactions: dict[str, set[str]] = {}
+
 
     @property
     def wing_notify(self) -> bool:
@@ -72,6 +74,10 @@ class CommanderHistoryManager:
         except (OSError, json.JSONDecodeError):
             log.exception("Failed to load seen_commanders.json, starting empty")
             self.seen_data = {}
+                
+        for cmdr_id, entry in self.seen_data.items():
+            if "sound" in entry:
+                entry["sound"] = os.path.splitext(entry["sound"])[0].lower()      
 
     def save_seen_commanders(self):
         if self.json_file_path is None:
@@ -129,7 +135,8 @@ class CommanderHistoryManager:
         else:
             files_to_process = [
                 f for f, mtime in file_mtimes.items()
-                if not self.last_modified_timestamp or mtime > self.last_modified_timestamp.timestamp()
+                if not self.last_modified_timestamp
+                   or (lambda ts: ts is not None and mtime > ts)(getattr(self.last_modified_timestamp, "timestamp", lambda: None)())
             ]
             if not files_to_process:
                 return None
@@ -170,6 +177,8 @@ class CommanderHistoryManager:
                     continue
         
                 cmdr_id = str(entry["CommanderID"])
+                
+                
                 ts = frontier_epoch + datetime.timedelta(seconds=entry["Epoch"])
     
                 existing = self.seen_data.get(cmdr_id)
@@ -182,7 +191,7 @@ class CommanderHistoryManager:
                 info: CommanderEntry = {
                     "commander_id": cmdr_id,
                     "name": existing.get("name", "unknown") if existing else "unknown",
-                    "sound": existing.get("sound", "neutral.wav") if existing else "neutral.wav",
+                    "sound": existing.get("sound", "neutral") if existing else "neutral",
                     "last_seen": ts.isoformat(),
                 }
         
@@ -192,6 +201,8 @@ class CommanderHistoryManager:
     
 
 
+    
+    
     def aggregated_commanders(self):
         data = self.aggregate_most_recent_commanders(False)
     
@@ -206,9 +217,21 @@ class CommanderHistoryManager:
         changed_entries: list[CommanderEntry] = []
     
         now_ts = time.time()
-        jump_recent = location.jump_ts and (now_ts - location.jump_ts <= 60)
-        wing_recent = location.wing_join and (now_ts - location.wing_join <= 60)
+        jump_recent = location.jump_ts is not None and (now_ts - location.jump_ts <= 60)
+        wing_recent = location.wing_join is not None and (now_ts - location.wing_join <= 60)
+        interdiction_recent = location.interdiction_ts is not None and (now_ts - location.interdiction_ts <= 60)
+        pvp_kill_recent = location.pvp_kill_ts is not None and (now_ts - location.pvp_kill_ts <= 60)
 
+    
+        log.info(
+            "aggregated_commanders: context system=%s state=%s wing=%s jump_recent=%s wing_recent=%s",
+            location.system,
+            location.state,
+            location.wing,
+            jump_recent,
+            wing_recent
+        )
+    
         for entry in entries:
             interactions = entry.get("Interactions", [])
     
@@ -219,60 +242,134 @@ class CommanderHistoryManager:
             ts = frontier_epoch + datetime.timedelta(seconds=entry["Epoch"])
     
             existing = self.seen_data.get(cmdr_id)
+    
             if existing:
                 last_seen_existing = datetime.datetime.fromisoformat(existing["last_seen"])
                 if ts <= last_seen_existing:
                     continue
+                
+                
+            current_flags = set(interactions)
+            previous_flags = self.last_interactions.get(cmdr_id, set())
+            
+            killed_now = "Killed" in current_flags and "Killed" not in previous_flags
+
     
             is_wing = "WingMember" in interactions
     
             info: CommanderEntry = {
                 "commander_id": cmdr_id,
                 "name": existing.get("name", "unknown") if existing else "unknown",
-                "sound": existing.get("sound", "neutral.wav") if existing else "neutral.wav",
+                "sound": existing.get("sound", "neutral") if existing else "neutral",
                 "last_seen": ts.isoformat(),
             }
-    
-            self.seen_data[cmdr_id] = info
-            changed_entries.append(info)
+ 
     
             inst = location.get_instance().get(cmdr_id)
-            beep_this_commander = True
     
-
+            beep_this_commander = True
+            
+            
+            log.info(
+                "cmdr %s detected: wing=%s existing_instance=%s",
+                cmdr_id,
+                is_wing,
+                bool(inst)
+            )
+    
+            # Jump suppression
             if jump_recent and cmdr_id in location.jump_backup:
                 prev = location.jump_backup[cmdr_id]
                 if prev.get("here", False):
+                    log.info(
+                        "cmdr %s suppressed: recent jump and was already here before jump",
+                        cmdr_id
+                    )
                     continue
     
+            # Wing join suppression
             if is_wing and wing_recent:
+                log.info(
+                    "cmdr %s suppressed: recent wing join",
+                    cmdr_id
+                )
                 beep_this_commander = False
                 continue
-    
-            if inst:    
-                if inst["system"] != location.system or inst["state"] != location.state:
-                    inst["system"] = location.system
-                    inst["state"] = location.state
-                    inst["here"] = True
-                    beep_this_commander = True
+         
 
-                elif inst.get("here", True):
+            if inst:
+                if interdiction_recent:
                     inst["here"] = False
-                    beep_this_commander = bool(self.beep_on_leave)
+                    beep_this_commander = False
+                    log.info(
+                        "cmdr %s beep suppressed due to recent interdiction → here flag cleared, will beep next time",
+                        cmdr_id
+                    )
                 
-                elif inst.get("here") is False:
+                
+                if pvp_kill_recent:
+                    # Always do PvP suppression
+                    inst["here"] = True
+                    beep_this_commander = False
+                
+                    log.info(
+                        "PVP kill suppression active: cmdr_id=%s victim_name=%s",
+                        cmdr_id,
+                        location.pvp_kill_victim
+                    )
+                
+                    # Optional second log if Killed flag just appeared
+                    if killed_now:
+                        log.info(
+                            "Killed flag transition detected: cmdr_id=%s victim_name=%s",
+                            cmdr_id,
+                            location.pvp_kill_victim
+                        )
+                        if info["name"] == "unknown":
+                            info["name"] = location.pvp_kill_victim.lower().capitalize()
+                
+                    # Update cache to avoid false future transitions
+                    self.last_interactions[cmdr_id] = current_flags
+                
+                    # Skip the rest of processing for this commander
+                    continue
+
+                                
+                
+                was_here = inst.get("here", False)
+            
+                if was_here:
+                    # Seen again → reset flag so next detection will beep
+                    inst["here"] = False
+                    beep_this_commander = False
+                    log.info("cmdr %s already marked as here → resetting here flag (will beep next time)", cmdr_id)
+                else:
                     inst["here"] = True
                     beep_this_commander = True
-                
-                else:
-                    beep_this_commander = False
+                    log.info("cmdr %s detected/rejoined → BEEP", cmdr_id)
+            
+                inst["state"] = location.state
+                inst["system"] = location.system
+
+
 
             else:
-                location.add_instance(cmdr_id, state=location.state, system=location.system)
+                location.add_instance(
+                    cmdr_id,
+                    state=location.state,
+                    system=location.system
+                )
+    
                 inst = location.get_instance()[cmdr_id]
                 inst["here"] = True
                 beep_this_commander = True
     
+                log.info(
+                    "cmdr %s first time seen in instance → BEEP",
+                    cmdr_id
+                )
+    
+            # Wing notification rules
             if not location.wing:
                 allow_beep = True
             else:
@@ -280,29 +377,66 @@ class CommanderHistoryManager:
                     allow_beep = self.wing_notify
                 else:
                     allow_beep = True
+                    
+                    
+                    
+            log.info(
+                "cmdr %s beep decision: allow_beep=%s beep_this_commander=%s final=%s",
+                cmdr_id,
+                allow_beep,
+                beep_this_commander,
+                allow_beep and beep_this_commander
+            )
     
-            if allow_beep and beep_this_commander:
+            if allow_beep and beep_this_commander and interdiction_recent == False:
                 beeps_to_play.append(info)
-            
+                log.info(
+                    "cmdr %s queued for sound playback (%s)",
+                    cmdr_id,
+                    info["sound"]
+                )
+                
+   
+            self.seen_data[cmdr_id] = info
+            changed_entries.append(info)
+                            
+            self.last_interactions[cmdr_id] = current_flags
     
         if not changed_entries:
+            log.info("aggregated_commanders: no changed entries")
             return
     
         if beeps_to_play and self._sound_listener:
+            log.info(
+                "aggregated_commanders: playing %d beep(s)",
+                len(beeps_to_play)
+            )
             self._sound_listener(beeps_to_play)
     
         if self._gui_listener and changed_entries:
+            log.info(
+                "aggregated_commanders: updating GUI with %d entries",
+                len(changed_entries)
+            )
             self._gui_listener(changed_entries)
+    
+    
+    
     
         location.jump_backup = {}
         location.jump_ts = None
         location.wing_join = None
-    
+        location.pvp_kill_ts = None
+        location.pvp_kill_victim = None
+        location.interdiction_ts = None
+
+        
+
+
         self.save_seen_commanders()
+    
+        log.info("aggregated_commanders: end")
 
-
-      
-      
       
     def trigger(self):
         with self._lock:

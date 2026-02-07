@@ -26,14 +26,15 @@ def journal_entry(cmdrname: str, is_beta: bool, system: str, station: str, entry
     system = entry.get("StarSystem", system)
     
     if event in ("StartUp", "LoadGame", "Resurrected", "Died"):
-        location.set(-1, system)
+        location.set(0, system)
 
     elif event == "SupercruiseEntry":        
         location.set(1, system)
         history_inst.trigger()
 
     elif event in ("SupercruiseExit", "Location", "CarrierJump"): 
-        location.set(0, system)
+        location.set(0, system, event)
+
         history_inst.trigger()
 
     elif event == "StartJump":
@@ -51,6 +52,14 @@ def journal_entry(cmdrname: str, is_beta: bool, system: str, station: str, entry
         location.set_wing(False)
         location.wing_changed()
     
+    elif event == "Interdiction":
+        location.interdiction()
+            
+    elif event == "PVPKill":
+        victim = entry.get("Victim")        
+        location.pvp_kill(victim)        
+        
+        
 def plugin_prefs(parent: "nb.Notebook", cmdr: str, is_beta: bool) -> Optional["nb.Frame"]:
     return gui_inst.options_menu(parent)
 

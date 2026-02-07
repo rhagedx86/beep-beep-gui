@@ -141,7 +141,8 @@ class SeenCommandersGUI:
         self.window.grid_columnconfigure(0, weight=1)
         self.window.grid_columnconfigure(1, weight=1)
         self.window.grid_columnconfigure(2, weight=1)
-    
+        
+        
         self.build_ui(self.window)
         self.make_tree_editable()
         self.start_auto_refresh()
@@ -264,6 +265,9 @@ class SeenCommandersGUI:
         popup.title(f"Edit Commander {info.get('name', 'unknown')}")
         popup.geometry(f"+{event.x_root}+{event.y_root}")
         popup.grab_set()
+
+        popup.bind("<Escape>", lambda e: popup.destroy())
+    
     
         tk.Label(popup, text="Name:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         name_var = tk.StringVar(value=info.get("name", "unknown"))
@@ -272,33 +276,49 @@ class SeenCommandersGUI:
         name_entry.focus_set()
         name_entry.selection_range(0, tk.END)
         name_entry.icursor(0)
-    
+
         tk.Label(popup, text="Sound:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        sound_var = tk.StringVar(value=info.get("sound", sound_inst.neutral))
-        combo = ttk.Combobox(popup, textvariable=sound_var, values=sound_inst.sound_files, state="readonly")
-        combo.grid(row=1, column=1, padx=5, pady=5)
-    
+        
+        sound_key = info.get("sound", "neutral").lower()
+        sound_var = tk.StringVar(value=sound_key.capitalize())
+        
+        combo = ttk.Combobox(
+            popup,
+            textvariable=sound_var,
+            values=[s.capitalize() for s in sound_inst.sound_files],
+            state="readonly"
+        )
+        combo.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        
+        tk.Button(
+            popup,
+            text="▶ Play",
+            command=lambda: beep_inst.play_sound(sound_var.get().lower())
+        ).grid(row=1, column=2, padx=5, pady=5, sticky="w")
+
+
+        
         def save_popup_changes():
             new_name = name_var.get()
-            new_sound = sound_var.get()
-    
+            new_sound = sound_var.get().lower() 
+        
             self.name_vars[cmdr_id].set(new_name)
             self.sound_vars[cmdr_id].set(new_sound)
-            
+
             history_inst.seen_data[cmdr_id]["name"] = new_name
             history_inst.seen_data[cmdr_id]["sound"] = new_sound
             
             self.tree.set(row_id, "name", new_name)
-            self.tree.set(row_id, "sound", new_sound)
-    
+            self.tree.set(row_id, "sound", new_sound.capitalize())
+        
             history_inst.save_seen_commanders()
-    
+        
             sort_field = config.get_config("sort_field", "last_seen")
             sort_asc = config.get_config("sort_asc", False)
             self.sort_rows(sort_field, sort_asc)
-    
+        
             popup.destroy()
-    
+  
         tk.Button(popup, text="Save", command=save_popup_changes).grid(row=2, column=0, columnspan=2, pady=10)
     
         def on_name_enter(_event):
@@ -375,9 +395,9 @@ class SeenCommandersGUI:
         popup.transient(self.window)
         popup.grab_set()
     
-        popup.geometry(
-            f"+{self.window.winfo_rootx() + 0}+{self.window.winfo_rooty() + 50}"
-        )
+    
+        self.restore_options_geometry(popup)
+
     
         options_frame = self.options_menu(popup)
     
@@ -385,6 +405,9 @@ class SeenCommandersGUI:
     
         popup.grid_rowconfigure(0, weight=1)
         popup.grid_columnconfigure(0, weight=1)
+        
+        self.attach_options_resize_listener(popup)
+
     
     def on_header_click(self, field):
         if getattr(self, "sort_field", None) == field:
@@ -431,13 +454,14 @@ class SeenCommandersGUI:
     
             self.name_vars.setdefault(cmdr_id, tk.StringVar(value=info.get("name", "unknown")))
             if cmdr_id not in self.sound_vars:
-                
-                sound = info.get("sound", sound_inst.neutral)
-            
-                if sound not in sound_inst.sound_files:
-                    sound = sound_inst.neutral                
 
-                self.sound_vars[cmdr_id] = tk.StringVar(value=sound)
+                sound_key = info.get("sound", "neutral").lower()
+                if sound_key not in sound_inst.sound_files:
+                    sound_key = "neutral"
+                
+                self.sound_vars[cmdr_id] = tk.StringVar(value=sound_key)
+
+
             self.last_seen_vars.setdefault(cmdr_id, tk.StringVar(value=self.format_time_ago(info.get("last_seen"))))
     
             index = 0
@@ -449,7 +473,7 @@ class SeenCommandersGUI:
     
             item = self.tree.insert("", index, values=(
                 self.name_vars[cmdr_id].get(),
-                self.sound_vars[cmdr_id].get(),
+                self.sound_vars[cmdr_id].get().capitalize(),
                 self.last_seen_vars[cmdr_id].get()
             ))
             self.tree_items[cmdr_id] = item
@@ -466,7 +490,7 @@ class SeenCommandersGUI:
             cmdr_id_str = str(cmdr_id)
     
             self.name_vars.setdefault(cmdr_id_str, tk.StringVar()).set(info.get("name", "unknown"))
-            self.sound_vars.setdefault(cmdr_id_str, tk.StringVar()).set(info.get("sound", sound_inst.neutral))
+            self.sound_vars.setdefault(cmdr_id_str, tk.StringVar()).set(info.get("sound", sound_inst.neutral).lower())
             self.last_seen_vars.setdefault(cmdr_id_str, tk.StringVar()).set(self.format_time_ago(info["last_seen"]))
     
             item_id = self.tree_items.get(cmdr_id_str)
@@ -474,7 +498,8 @@ class SeenCommandersGUI:
                 if item_id:
                     self.tree.set(item_id, "last_seen", self.format_time_ago(info["last_seen"]))
                     self.tree.set(item_id, "name", info.get("name", "unknown"))
-                    self.tree.set(item_id, "sound", info.get("sound", sound_inst.neutral))
+                    self.tree.set(item_id, "sound", info.get("sound", sound_inst.neutral).capitalize())
+                    
                 else:
                     new_cmdr_ids.append(cmdr_id_str)
     
@@ -553,6 +578,63 @@ class SeenCommandersGUI:
     
         refresh()
 
+    
+        
+    def attach_options_resize_listener(self, popup):
+        resize_after_id = None
+    
+        def on_resize(_event):
+            nonlocal resize_after_id
+            if resize_after_id:
+                try:
+                    popup.after_cancel(resize_after_id)
+                except Exception:
+                    pass
+            resize_after_id = popup.after(300, lambda: self.save_options_geometry(popup))
+    
+        popup.bind("<Configure>", on_resize)
+    
+        def on_window_close():
+            self.save_options_geometry(popup)
+            popup.destroy()
+    
+        popup.protocol("WM_DELETE_WINDOW", on_window_close)
+    
+    
+    
+    def save_options_geometry(self, popup):
+        if not popup or not popup.winfo_exists():
+            return
+    
+        width = max(100, popup.winfo_width())
+        height = max(100, popup.winfo_height())
+        x = popup.winfo_x()
+        y = popup.winfo_y()
+    
+        config.set_config("options_window_x", x)
+        config.set_config("options_window_y", y)
+        config.set_config("options_window_width", width)
+        config.set_config("options_window_height", height)
+        config.save_config()
+    
+    
+    def restore_options_geometry(self, popup):
+        width = config.get_config("options_window_width", None)
+        height = config.get_config("options_window_height", None)
+        x = config.get_config("options_window_x", None)
+        y = config.get_config("options_window_y", None)
+    
+
+        if width is None or height is None or x is None or y is None:
+            screen_width = popup.winfo_screenwidth()
+            screen_height = popup.winfo_screenheight()
+            width = screen_width * 75 // 100
+            height = screen_height * 75 // 100
+            x = (screen_width - width) // 2   
+            y = (screen_height - height) // 2 
+
+
+        popup.geometry(f"{width}x{height}+{x}+{y}")
         
     def open_sounds_folder(self):
         folder = os.path.join(self.plugin_dir, "sounds")
@@ -590,6 +672,9 @@ class SeenCommandersGUI:
         slider.bind("<ButtonRelease-1>", on_save)
         return row + 1
     
+
+
+
     def add_info_box(self, frame, row, text, *, title="Info", columnspan=2):
         info_frame = tk.LabelFrame(frame, text=title, bd=2, relief="groove")
         info_frame.grid(
@@ -604,24 +689,55 @@ class SeenCommandersGUI:
         label = tk.Label(
             info_frame,
             text=text,
-            justify="left"
+            justify="left",
+            anchor="nw"
         )
         label.pack(padx=10, pady=6, fill="x")
-        
-        def update_wrap(event):
-            label.config(wraplength=event.width - 20)  # minus padding
     
-        info_frame.bind("<Configure>", update_wrap)        
+        def update_wrap(event):
+            width = event.width
+            if width > 50:
+                label.config(wraplength=width - 20)
+    
+        info_frame.bind("<Configure>", update_wrap)
     
         return row + 1
 
+   
+
+
+
     def options_menu(self, parent):
-        frame = nb.Frame(parent)
-        frame.columnconfigure(1, weight=1)
+        canvas = tk.Canvas(parent)
+        scrollbar = tk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+    
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+    
+        parent.grid_rowconfigure(0, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+    
+        frame = tk.Frame(canvas)
         frame.columnconfigure(0, weight=1)
+    
+        canvas_window = canvas.create_window((0, 0), window=frame, anchor="nw")
+    
+        def on_canvas_configure(event):
+            canvas.itemconfigure(canvas_window, width=event.width)
+    
+        canvas.bind("<Configure>", on_canvas_configure)
+    
+        def on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        frame.bind("<Configure>", on_frame_configure)
+    
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
 
         row = 0
-
+    
         row = self.add_slider(
             frame,
             row,
@@ -633,7 +749,7 @@ class SeenCommandersGUI:
         )
                 
         tk.Button(
-            frame,
+            frame, 
             text="Open Sounds Folder",
             command=self.open_sounds_folder
         ).grid(row=row, column=0, padx=5, sticky="w")
@@ -652,14 +768,34 @@ class SeenCommandersGUI:
             (
                 "To add sounds, place them in the 'sounds' folder inside the plugin. "
                 "Only WAV and MP3 files are supported. "
-                "The default files 'foe', 'friend', and 'neutral' must exist. "
-                "On plugin startup, the newest file with each name will be loaded. "
-                "Restart EDMC to load newly added sounds. "
+                "The default files 'foe', 'friend', and 'neutral' in the 'default' folder "
+                "should not be modified. To override a default sound, simply add a file "
+                "with the same name in the main 'sounds' folder (ext does not matter). "
+                "The plugin automatically loads the newest file for each name. "
+                "Use the 'Reload Sounds' button to update the list immediately."
             ),
             title="Sound Files"
         )
+
+        tk.Button(
+            frame,
+            text="Reload sounds",
+            command=sound_inst.reload
+        ).grid(row=row, column=1, padx=5, sticky="e")
         
-        
+        row += 1
+    
+        row = self.add_info_box(
+            frame,
+            row,
+            (
+                "Click the 'Reload Sounds' button to re-scan the 'sounds' folder "
+                "and update available sound files. This allows you to add new sounds "
+                "or replace existing ones without restarting EDMC."
+            ),
+            title="Reload Sounds"
+        )
+
         row = self.add_slider(
             frame,
             row,
@@ -670,7 +806,6 @@ class SeenCommandersGUI:
             attr="sounds"
         )        
         
-            
         row = self.add_info_box(
             frame,
             row,
@@ -681,7 +816,6 @@ class SeenCommandersGUI:
         )
         
         row += 1
-        
         
         row = self.add_checkbox(
             frame,
@@ -723,7 +857,7 @@ class SeenCommandersGUI:
             frame,
             row,
             (
-                "If EDMC is started while the game is already running, commanders who are"
+                "If EDMC is started while the game is already running, commanders who are "
                 "already in your instance may trigger sounds in reverse — for example, "
                 "alerts may play when they leave instead of when they arrive. \n\n"
                 "Going to any EMPTY instance (Normal Space, Supercruise, or Hyperspace) and "
@@ -731,8 +865,8 @@ class SeenCommandersGUI:
             ),
             title="General Notes"
         )
-        
-        frame.pack_propagate(True)        
-        return frame
 
+        return canvas
+    
+    
 gui_inst = SeenCommandersGUI()
