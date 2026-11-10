@@ -1,16 +1,101 @@
 import datetime
+import math
 import os
-import ctypes
+import signal
+import struct
+import subprocess
+import platform
+import shutil
 import threading
+import time
 from logutil import log
 from beep_beep_config import config
 from commander_history import history_inst
-from sound_loader import sound_inst
+
+class SoundLoader:
+
+    CORE = ["neutral", "friend", "foe"]
+
+    def __init__(self):
+        self.plugin_dir = os.path.dirname(__file__)
+        self.sounds_dir = os.path.join(self.plugin_dir, "sounds")
+        self.default_dir = os.path.join(self.sounds_dir, "default")
+        self.sound_map: dict[str, str] = {}
+        self.neutral: str | None = None
+        self.load_sounds()
+
+    def _newest_match(self, folder, base_name):
+        if not os.path.isdir(folder):
+            return None
+
+        candidates = []
+        for f in os.listdir(folder):
+            name, ext = os.path.splitext(f)
+            if name.lower() != base_name:
+                continue
+            if ext.lower() not in (".wav", ".mp3"):
+                continue
+            full = os.path.join(folder, f)
+            if os.path.isfile(full):
+                candidates.append(f)
+
+        if not candidates:
+            return None
+
+        candidates.sort(
+            key=lambda f: os.path.getmtime(os.path.join(folder, f)),
+            reverse=True
+        )
+        return candidates[0]
+
+    def load_sounds(self):
+        for core in self.CORE:
+            file = self._newest_match(self.sounds_dir, core)
+            if file:
+                self.sound_map[core] = file
+                if core == "neutral":
+                    self.neutral = file
+            else:
+                file = self._newest_match(self.default_dir, core)
+                if file:
+                    self.sound_map[core] = os.path.join("default", file)
+                    if core == "neutral":
+                        self.neutral = os.path.join("default", file)  
+
+        if os.path.isdir(self.sounds_dir):
+            for f in os.listdir(self.sounds_dir):
+                full = os.path.join(self.sounds_dir, f)
+                if not os.path.isfile(full):
+                    continue
+                name, ext = os.path.splitext(f)
+                name = name.lower()
+                if name in self.sound_map:
+                    existing_file = os.path.join(self.sounds_dir, self.sound_map[name])
+                    if os.path.getmtime(full) > os.path.getmtime(existing_file):
+                        self.sound_map[name] = f
+                else:
+                    if ext.lower() in (".wav", ".mp3"):
+                        self.sound_map[name] = f
+
+        self.sound_map["none"] = "none"
+        self.sound_files = list(self.sound_map.keys())
+        
+    def reload(self):
+        self.load_sounds()
+
+sound_inst = SoundLoader()
+
 
 class BeepBeep:
     def __init__(self):
-        self.last_beep = datetime.datetime.min
         self.plugin_dir = os.path.dirname(__file__)
+        self._play_lock = threading.Lock()
+        self._players: list[subprocess.Popen] = []
+        self._timers: list[threading.Timer] = []
+        self._winsound_active = False
+        self._winsound_files: set[str] = set()
+        self._dll = None
+        self._dll_checked = False
 
     @property
     def volume(self) -> float:
@@ -24,6 +109,714 @@ class BeepBeep:
     def sounds(self) -> int:
         return config.get_config("sounds", 1)
 
+    def _amplitude(self) -> float:
+        """Turn the 0-100 slider into playback amplitude.
+
+        100% is full level. The steps are even in decibels, about -40 dB at
+        1%, and silence at 0.
+        """
+        try:
+            percent = float(self.volume)
+        except (TypeError, ValueError):
+            percent = 100.0
+        percent = max(0.0, min(100.0, percent))
+        if percent <= 0.0:
+            return 0.0
+        if percent >= 100.0:
+            return 1.0
+        decibels = -40.0 * (1.0 - percent / 100.0)
+        return 10 ** (decibels / 20.0)
+
+    def _dll_volume(self, amplitude: float) -> float:
+        """Convert linear amplitude to the float BeepBeepPlay.dll expects.
+
+        The DLL maps its argument v with (1-v)^2 * -10000 hundredths of a
+        decibel. Passing the slider percent through that curve directly makes
+        the middle of the slider nearly silent.
+        """
+        amplitude = max(0.0, min(1.0, amplitude))
+        if amplitude <= 0.0:
+            return 0.0
+        if amplitude >= 1.0:
+            return 1.0
+        db100 = max(-10000.0, 2000.0 * math.log10(amplitude))
+        return 1.0 - math.sqrt(-db100 / 10000.0)
+
+    def _forget_temp(self, path: str | None) -> None:
+        if not path:
+            return
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    def _relax_temp(self, path: str) -> None:
+        """Let the desktop player read a file mkstemp created as owner-only."""
+        try:
+            os.chmod(path, 0o644)
+        except OSError:
+            pass
+
+    def _scale_s16(self, raw: bytes, amplitude: float) -> bytes:
+        usable = len(raw) - (len(raw) % 2)
+        chunk = raw[:usable]
+        try:
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                import audioop
+            return audioop.mul(chunk, 2, amplitude)
+        except ImportError:
+            pass
+        import array
+        import sys
+        samples = array.array("h")
+        samples.frombytes(chunk)
+        if sys.byteorder != "little":
+            samples.byteswap()
+        for index, sample in enumerate(samples):
+            value = int(sample * amplitude)
+            if value > 32767:
+                value = 32767
+            elif value < -32768:
+                value = -32768
+            samples[index] = value
+        if sys.byteorder != "little":
+            samples.byteswap()
+        return samples.tobytes()
+
+    def _scale_u8(self, raw: bytes, amplitude: float) -> bytes:
+        out = bytearray(len(raw))
+        for index, sample in enumerate(raw):
+            value = int((sample - 128) * amplitude)
+            if value > 127:
+                value = 127
+            elif value < -128:
+                value = -128
+            out[index] = value + 128
+        return bytes(out)
+
+    def _scale_s24(self, raw: bytes, amplitude: float) -> bytes:
+        usable = len(raw) - (len(raw) % 3)
+        out = bytearray(usable)
+        for index in range(0, usable, 3):
+            value = raw[index] | (raw[index + 1] << 8) | (raw[index + 2] << 16)
+            if value & 0x800000:
+                value -= 0x1000000
+            value = int(value * amplitude)
+            if value > 8388607:
+                value = 8388607
+            elif value < -8388608:
+                value = -8388608
+            if value < 0:
+                value += 0x1000000
+            out[index] = value & 0xFF
+            out[index + 1] = (value >> 8) & 0xFF
+            out[index + 2] = (value >> 16) & 0xFF
+        return bytes(out)
+
+    def _scale_s32(self, raw: bytes, amplitude: float) -> bytes:
+        import array
+        import sys
+        usable = len(raw) - (len(raw) % 4)
+        samples = array.array("i")
+        samples.frombytes(raw[:usable])
+        if sys.byteorder != "little":
+            samples.byteswap()
+        for index, sample in enumerate(samples):
+            value = int(sample * amplitude)
+            if value > 2147483647:
+                value = 2147483647
+            elif value < -2147483648:
+                value = -2147483648
+            samples[index] = value
+        if sys.byteorder != "little":
+            samples.byteswap()
+        return samples.tobytes()
+
+    def _scale_f32(self, raw: bytes, amplitude: float) -> bytes:
+        import array
+        import sys
+        usable = len(raw) - (len(raw) % 4)
+        samples = array.array("f")
+        samples.frombytes(raw[:usable])
+        if sys.byteorder != "little":
+            samples.byteswap()
+        for index, sample in enumerate(samples):
+            samples[index] = sample * amplitude
+        if sys.byteorder != "little":
+            samples.byteswap()
+        return samples.tobytes()
+
+    def _scale_pcm_payload(self, raw: bytes, bits: int, amplitude: float, floating: bool) -> bytes | None:
+        if not raw:
+            return None
+        if floating:
+            if bits != 32:
+                return None
+            return self._scale_f32(raw, amplitude)
+        if bits == 16:
+            return self._scale_s16(raw, amplitude)
+        if bits == 8:
+            return self._scale_u8(raw, amplitude)
+        if bits == 24:
+            return self._scale_s24(raw, amplitude)
+        if bits == 32:
+            return self._scale_s32(raw, amplitude)
+        return None
+
+    def _quiet_wav_bytes(self, src: bytes, amplitude: float) -> bytes | None:
+        """Return a copy of a PCM wav with samples multiplied by amplitude."""
+        if len(src) < 44 or src[0:4] != b"RIFF" or src[8:12] != b"WAVE":
+            return None
+        pos = 12
+        audio_format = None
+        bits = None
+        block = None
+        channels = None
+        data_off = None
+        data_size = None
+        while pos + 8 <= len(src):
+            chunk_id = src[pos:pos + 4]
+            size = struct.unpack_from("<I", src, pos + 4)[0]
+            start = pos + 8
+            if start + size > len(src):
+                return None
+            if chunk_id == b"fmt " and size >= 16 and audio_format is None:
+                audio_format, channels, _rate, _byte_rate, block, bits = struct.unpack_from("<HHIIHH", src, start)
+                if audio_format == 0xFFFE and size >= 40:
+                    audio_format = struct.unpack_from("<H", src, start + 24)[0]
+            elif chunk_id == b"data" and data_off is None:
+                data_off = start
+                data_size = size
+            pos = start + size + (size & 1)
+        if audio_format is None or data_off is None or not channels or not block or not bits:
+            return None
+        floating = audio_format == 3
+        if audio_format not in (1, 3):
+            return None
+        width = bits // 8
+        if width <= 0 or block != channels * width:
+            return None
+        scaled = self._scale_pcm_payload(src[data_off:data_off + data_size], bits, amplitude, floating)
+        if not scaled or len(scaled) > data_size:
+            return None
+        out = bytearray(src)
+        out[data_off:data_off + len(scaled)] = scaled
+        return bytes(out)
+
+    def _write_temp_wav(self, data: bytes) -> str | None:
+        import tempfile
+        try:
+            fd, path = tempfile.mkstemp(
+                prefix="beep-beep-", suffix=".wav", dir=self.plugin_dir
+            )
+        except OSError:
+            return None
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError("short write")
+                view = view[written:]
+        except OSError:
+            os.close(fd)
+            self._forget_temp(path)
+            return None
+        os.close(fd)
+        self._relax_temp(path)
+        return path
+
+    def _render_quiet_wav(self, full_path: str, amplitude: float) -> str | None:
+        """Decode mp3 or an odd wav through ffmpeg or sox when PCM scaling cannot."""
+        import tempfile
+        try:
+            fd, path = tempfile.mkstemp(
+                prefix="beep-beep-", suffix=".wav", dir=self.plugin_dir
+            )
+        except OSError:
+            return None
+        os.close(fd)
+        level = f"{max(0.0, amplitude):.6f}"
+        commands = []
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            commands.append([
+                ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", full_path, "-filter:a", f"volume={level}", path,
+            ])
+        sox = shutil.which("sox")
+        if sox:
+            commands.append([sox, "-v", level, full_path, path])
+        for cmd in commands:
+            try:
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                )
+            except OSError:
+                continue
+            if result.returncode == 0 and os.path.isfile(path) and os.path.getsize(path) > 44:
+                self._relax_temp(path)
+                return path
+        self._forget_temp(path)
+        return None
+
+    def _write_quiet_wav(self, full_path: str, amplitude: float) -> str | None:
+        ext = os.path.splitext(full_path)[1].lower()
+        if ext == ".wav":
+            try:
+                with open(full_path, "rb") as handle:
+                    quiet = self._quiet_wav_bytes(handle.read(), amplitude)
+            except OSError:
+                quiet = None
+            if quiet:
+                return self._write_temp_wav(quiet)
+        return self._render_quiet_wav(full_path, amplitude)
+
+    def _prepare_playback(self, full_path: str, amplitude: float):
+        """Return the file to play, the player amplitude, and a temp path to delete.
+
+        Linux players often ignore their volume flag. The samples are scaled
+        first, then the player is asked for full scale so the flag cannot
+        make the sound quiet a second time.
+        """
+        if amplitude >= 1.0:
+            return full_path, 1.0, None
+        quiet = self._write_quiet_wav(full_path, amplitude)
+        if quiet:
+            return quiet, 1.0, quiet
+        log.info("Could not scale %s; asking the player to set the volume", full_path)
+        return full_path, amplitude, None
+
+    def set_muted(self, muted: bool) -> None:
+        config.set_config("mute", bool(muted))
+        config.save_config()
+        if muted:
+            self.stop_playback()
+
+    def stop_playback(self) -> None:
+        """Stop a sound that is already playing and cancel sounds waiting to start."""
+        with self._play_lock:
+            timers = self._timers
+            players = self._players
+            self._timers = []
+            self._players = []
+            winsound_active = self._winsound_active
+            self._winsound_active = False
+            winsound_files = list(self._winsound_files)
+            self._winsound_files.clear()
+        for timer in timers:
+            timer.cancel()
+        for proc in players:
+            self._terminate_player(proc)
+        if winsound_active:
+            self._purge_winsound()
+        for path in winsound_files:
+            self._forget_temp(path)
+
+    def _terminate_player(self, proc: subprocess.Popen) -> None:
+        if proc.poll() is not None:
+            return
+        if os.name == "posix":
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    proc.kill()
+                except OSError:
+                    return
+        else:
+            try:
+                proc.kill()
+            except OSError:
+                return
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def _purge_winsound(self) -> None:
+        try:
+            import winsound
+            winsound.PlaySound(None, winsound.SND_PURGE)
+        except Exception:
+            log.exception("Failed to stop winsound playback")
+
+    def _popen_player(self, cmd: list[str]):
+        """Start a player and drain its stderr so a full pipe cannot stall it."""
+        with self._play_lock:
+            if self.mute:
+                return None
+            kwargs = {
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.PIPE,
+                "stdin": subprocess.DEVNULL,
+            }
+            # Own session so stopping the player does not signal EDMC.
+            if os.name == "posix":
+                kwargs["start_new_session"] = True
+            proc = subprocess.Popen(cmd, **kwargs)
+            self._players = [item for item in self._players if item.poll() is None]
+            self._players.append(proc)
+        chunks: list[bytes] = []
+
+        def drain() -> None:
+            try:
+                data = proc.stderr.read() if proc.stderr else b""
+            except Exception:
+                data = b""
+            chunks.append(data or b"")
+
+        drain_thread = threading.Thread(target=drain, daemon=True)
+        drain_thread.start()
+        return proc, chunks, drain_thread
+
+    def _delete_after(self, proc: subprocess.Popen, path: str) -> None:
+        started = time.monotonic()
+        try:
+            proc.wait()
+        except Exception:
+            pass
+        # A wrapper can exit before the player it started has opened the file.
+        if time.monotonic() - started < 0.5:
+            time.sleep(15.0)
+        self._forget_temp(path)
+
+    def _command_for(
+        self,
+        player: str,
+        full_path: str,
+        amplitude: float,
+        with_volume: bool = True,
+    ) -> list[str]:
+        level = f"{amplitude:.4f}"
+        if player == "ffplay":
+            cmd = [player, "-nodisp", "-autoexit"]
+            if with_volume:
+                cmd.extend(["-af", f"volume={level}"])
+            cmd.append(full_path)
+            return cmd
+        if player == "play":
+            cmd = [player, "-q"]
+            if with_volume:
+                cmd.extend(["-v", level])
+            cmd.append(full_path)
+            return cmd
+        if player == "pw-play":
+            cmd = [player]
+            if with_volume:
+                cmd.append(f"--volume={level}")
+            cmd.append(full_path)
+            return cmd
+        if player == "paplay":
+            cmd = [player]
+            if with_volume:
+                pulse = max(0, min(65536, int(round(amplitude * 65536))))
+                cmd.append(f"--volume={pulse}")
+            cmd.append(full_path)
+            return cmd
+        if player == "mpg123":
+            cmd = [player]
+            if with_volume:
+                factor = max(0, min(32768, int(round(amplitude * 32768))))
+                cmd.extend(["-f", str(factor)])
+            cmd.extend(["-q", full_path])
+            return cmd
+        if player == "cvlc":
+            cmd = [player, "--intf", "dummy", "--play-and-exit"]
+            if with_volume:
+                cmd.extend(["--gain", level])
+            cmd.append(full_path)
+            return cmd
+        if player == "afplay":
+            if with_volume:
+                return [player, "-v", level, full_path]
+            return [player, full_path]
+        return [player, full_path]
+
+    def _linux_players(self, full_path: str) -> tuple[str, ...]:
+        ext = os.path.splitext(full_path)[1].lower()
+        # paplay reaches the Mint desktop session. pw-play is the PipeWire
+        # tool. aplay is last because it often targets a device the desktop
+        # is not using.
+        if ext == ".wav":
+            return ("paplay", "pw-play", "ffplay", "play", "aplay")
+        if ext == ".mp3":
+            return ("mpg123", "ffplay", "cvlc")
+        return ()
+
+    def _external_player_command(
+        self,
+        full_path: str,
+        amplitude: float,
+        with_volume: bool = True,
+    ) -> list[str] | None:
+        system = platform.system()
+        if system == "Darwin":
+            return self._command_for("afplay", full_path, amplitude, with_volume)
+        if system == "Windows":
+            return None
+        for player in self._linux_players(full_path):
+            if shutil.which(player):
+                return self._command_for(player, full_path, amplitude, with_volume)
+        return None
+
+    def _player_kept_running(self, proc: subprocess.Popen, started: float) -> bool:
+        """True when the player is still playing, or finished a real playback."""
+        try:
+            code = proc.wait(timeout=0.35)
+        except subprocess.TimeoutExpired:
+            return True
+        if self.mute:
+            return True
+        return code == 0 and (time.monotonic() - started) >= 0.2
+
+    def _try_linux_players(
+        self,
+        full_path: str,
+        amplitude: float,
+        with_volume: bool,
+        cleanup: str | None,
+        retry_first: bool = False,
+    ) -> bool:
+        """Try each installed player. A player that exits immediately is skipped.
+
+        The first installed player is retried once before the next player is
+        tried. This matches the Windows path, which retries the DLL once before
+        falling back to winsound.
+        """
+        tried = False
+        for player in self._linux_players(full_path):
+            if not shutil.which(player):
+                continue
+            if self.mute:
+                self._forget_temp(cleanup)
+                return True
+            attempts = 2 if retry_first and not tried else 1
+            tried = True
+            for attempt in range(attempts):
+                if attempt:
+                    time.sleep(0.05)
+                cmd = self._command_for(player, full_path, amplitude, with_volume)
+                started = time.monotonic()
+                try:
+                    opened = self._popen_player(cmd)
+                except OSError as exc:
+                    log.error("Could not start %s: %s", player, exc)
+                    break
+                if opened is None:
+                    self._forget_temp(cleanup)
+                    return True
+                proc, chunks, drain = opened
+                if self._player_kept_running(proc, started):
+                    if cleanup:
+                        threading.Thread(
+                            target=self._delete_after,
+                            args=(proc, cleanup),
+                            daemon=True,
+                        ).start()
+                    log.info("Started %s with %s", os.path.basename(full_path), player)
+                    return True
+                drain.join(timeout=0.2)
+                err = b"".join(chunks).decode("utf-8", "replace").strip()
+                if attempt + 1 < attempts:
+                    log.warning(
+                        "Player failed (%s): %s; retrying",
+                        " ".join(cmd),
+                        err or "exited before playback",
+                    )
+                else:
+                    log.error(
+                        "Player failed (%s): %s",
+                        " ".join(cmd),
+                        err or "exited before playback",
+                    )
+        if not tried:
+            log.error("No suitable sound player found for %s", full_path)
+        return False
+
+    def _play_linux(self, full_path: str, amplitude: float) -> None:
+        """Play on Linux. The slider is baked into a copy of the file.
+
+        The copy is played at the player's normal volume. A unity volume flag
+        on that copy makes some Mint players exit or mute, and 1.0.24 stopped
+        after the first player. The first player is retried once, then later
+        players still get a turn. If the copy cannot be played, the original
+        file is played.
+        """
+        cleanup = None
+        play_path = full_path
+        try:
+            try:
+                play_path, _ignored, cleanup = self._prepare_playback(full_path, amplitude)
+            except Exception:
+                log.exception("Could not scale %s", full_path)
+                self._forget_temp(cleanup)
+                cleanup = None
+                play_path = full_path
+
+            scaled = cleanup is not None
+            # Volume flags are only for a file that was not already scaled.
+            if self._try_linux_players(
+                play_path,
+                amplitude,
+                not scaled and amplitude < 1.0,
+                cleanup,
+                retry_first=True,
+            ):
+                cleanup = None
+                return
+            if not scaled:
+                log.error("No sound player could play %s", full_path)
+                return
+            log.error("Quieter copy of %s could not be played; playing the original", full_path)
+            self._forget_temp(cleanup)
+            cleanup = None
+            if self._try_linux_players(full_path, amplitude, True, None):
+                return
+            self._try_linux_players(full_path, amplitude, False, None)
+        finally:
+            self._forget_temp(cleanup)
+
+    def _load_windows_dll(self):
+        """Load the volume-capable player once, or fall back to winsound.
+
+        The DLL can fail to load with WinError 193 when another program has
+        put a Visual C++ runtime for the other architecture on PATH, or when
+        EDMC itself is 32-bit. A load failure must not abort playback.
+        """
+        if self._dll_checked:
+            return self._dll
+        self._dll_checked = True
+        dll_path = os.path.join(self.plugin_dir, "BeepBeepPlay.dll")
+        if not os.path.isfile(dll_path):
+            log.warning("BeepBeepPlay.dll not found, using the Windows sound fallback")
+            return None
+        try:
+            import ctypes
+            dll = ctypes.CDLL(dll_path)
+            dll.BeepBeepPlay.argtypes = [ctypes.c_char_p, ctypes.c_float]
+            dll.BeepBeepPlay.restype = ctypes.c_int
+        except (OSError, AttributeError) as exc:
+            import ctypes
+            log.warning(
+                "BeepBeepPlay.dll could not be loaded (%s) in %s-bit EDMC; "
+                "using the Windows sound fallback",
+                exc,
+                ctypes.sizeof(ctypes.c_void_p) * 8,
+            )
+            return None
+        self._dll = dll
+        return dll
+
+    def _play_windows(self, full_path: str, amplitude: float) -> None:
+        dll = self._load_windows_dll()
+        if dll is not None:
+            name = os.path.basename(full_path)
+            for attempt in range(2):
+                try:
+                    if self.mute:
+                        return
+                    result = dll.BeepBeepPlay(
+                        full_path.encode("utf-8"), self._dll_volume(amplitude)
+                    )
+                    if result == 0:
+                        log.info("Started %s with BeepBeepPlay.dll", name)
+                        return
+                    log.warning(
+                        "BeepBeepPlay.dll could not play %s (0x%08X), attempt %d",
+                        name,
+                        result & 0xFFFFFFFF,
+                        attempt + 1,
+                    )
+                except Exception:
+                    log.exception(
+                        "BeepBeepPlay.dll failed on %s, attempt %d", name, attempt + 1
+                    )
+                if attempt == 0:
+                    time.sleep(0.05)
+            log.warning("Falling back to winsound for %s", name)
+        self._play_windows_fallback(full_path, amplitude)
+
+    def _play_windows_fallback(self, full_path: str, amplitude: float) -> None:
+        """Play through winsound when the DLL cannot be used.
+
+        winsound takes a file, so the slider is baked into a temporary copy.
+        The copy is removed once the WAV should have finished playing.
+        """
+        import winsound
+        cleanup = None
+        play_path = full_path
+        try:
+            try:
+                play_path, _ignored, cleanup = self._prepare_playback(full_path, amplitude)
+            except Exception:
+                log.exception("Could not scale %s", full_path)
+                self._forget_temp(cleanup)
+                cleanup = None
+                play_path = full_path
+            with self._play_lock:
+                if self.mute:
+                    self._forget_temp(cleanup)
+                    return
+                winsound.PlaySound(play_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                self._winsound_active = True
+                if cleanup:
+                    self._winsound_files.add(cleanup)
+            log.info("Playing %s with winsound", os.path.basename(full_path))
+        except Exception as e:
+            log.error("Failed to play sound %s: %s", full_path, e)
+            self._forget_temp(cleanup)
+            return
+        if cleanup:
+            timer = threading.Timer(
+                self._wav_duration(play_path) + 1.0,
+                self._delete_winsound_file,
+                args=(cleanup,),
+            )
+            timer.daemon = True
+            timer.start()
+
+    def _wav_duration(self, path: str) -> float:
+        try:
+            import wave
+            with wave.open(path, "rb") as handle:
+                rate = handle.getframerate()
+                if rate:
+                    return handle.getnframes() / float(rate)
+        except Exception:
+            pass
+        return 10.0
+
+    def _delete_winsound_file(self, path: str) -> None:
+        with self._play_lock:
+            self._winsound_files.discard(path)
+        self._forget_temp(path)
+
+    def _play_sound_cross_platform(self, full_path: str, amplitude: float):
+        system = platform.system()
+        try:
+            if system == "Windows":
+                self._play_windows(full_path, amplitude)
+                return
+
+            if system == "Linux":
+                self._play_linux(full_path, amplitude)
+                return
+
+            cmd = self._external_player_command(full_path, amplitude)
+            if cmd is None:
+                log.error("No suitable sound player found for %s", full_path)
+                return
+            opened = self._popen_player(cmd)
+            if opened is None:
+                return
+        except Exception as e:
+            log.error("Failed to play sound %s: %s", full_path, e)
 
     def play_sound(self, base_name: str):
         if self.mute or base_name.lower() == "none":
@@ -38,11 +831,6 @@ class BeepBeep:
                 return
     
         full_path = os.path.join(self.plugin_dir, "sounds", file_to_play)
-        dll_path = os.path.join(self.plugin_dir, "BeepBeepPlay.dll")
-    
-        if not os.path.isfile(dll_path):
-            log.info("Cannot find BeepBeepPlay.dll in %s", dll_path)
-            return
     
         if not os.path.isfile(full_path):
             log.info("Cannot find sound %s, trying neutral instead", full_path)
@@ -51,15 +839,12 @@ class BeepBeep:
                 log.info("No neutral sound found, cannot play '%s'", base_name)
                 return
     
-        vol = self.volume / 100.0
-    
-        try:
-            dll = ctypes.CDLL(dll_path)
-            dll.BeepBeepPlay.argtypes = [ctypes.c_char_p, ctypes.c_float]
-            dll.BeepBeepPlay.restype = ctypes.c_int
-            dll.BeepBeepPlay(full_path.encode("utf-8"), vol)
-        except (OSError, AttributeError, TypeError) as e:
-            log.error("Failed to play sound %s: %s", full_path, e)
+        amplitude = self._amplitude()
+        if amplitude <= 0.0:
+            return
+
+        log.info("TIMING sound t=%.3f file=%s", __import__("time").time(), os.path.basename(full_path))
+        self._play_sound_cross_platform(full_path, amplitude)
 
         
     def handle_event(self, info: dict | list[dict]):
@@ -69,31 +854,50 @@ class BeepBeep:
         if not self.sounds:
             return
     
-        now = datetime.datetime.utcnow()
         possible_sounds: list[str] = []
+        possible_names: list[str] = []
     
+        touched_saved = False
         for entry in info:
             cmdr_id = entry["commander_id"]
-            existing = history_inst.seen_data.get(cmdr_id, {})
-            selected = existing.get("sound", sound_inst.neutral)
+            existing = history_inst.seen_data.get(cmdr_id)
+            if isinstance(existing, dict):
+                selected = existing.get("sound", sound_inst.neutral)
+                history_inst.seen_data[cmdr_id] = existing
+                touched_saved = True
+            else:
+                # Journal evidence can beep before a history row exists.
+                # Do not invent a seen_commanders row for that.
+                selected = entry.get("sound") or sound_inst.neutral
             if selected in ("none.wav", "none"):
                 continue
-    
             possible_sounds.append(selected)
-            history_inst.seen_data[cmdr_id] = existing
+            possible_names.append(str(entry.get("name") or cmdr_id))
     
         if possible_sounds:
-            self.last_beep = now
-            history_inst.save_seen_commanders()
+            if touched_saved:
+                history_inst.save_seen_commanders()
+            if len(possible_sounds) > self.sounds:
+                log.info(
+                    "Sound cap %d: not played for %s",
+                    self.sounds,
+                    ", ".join(possible_names[self.sounds:]),
+                )
             self._schedule_sounds(possible_sounds)
         
     def _schedule_sounds(self, sounds: list[str]):
         max_sounds = self.sounds
         for i, sound_file in enumerate(sounds[:max_sounds]):
-            threading.Timer(
+            timer = threading.Timer(
                 i * 0.2,
                 lambda s=sound_file: self.play_sound(s)
-            ).start()
+            )
+            timer.daemon = True
+            with self._play_lock:
+                if self.mute:
+                    return
+                self._timers.append(timer)
+            timer.start()
            
 beep_inst = BeepBeep()
 
